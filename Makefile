@@ -6,13 +6,14 @@
 #   make release   dist/Celare-<version>.zip, dist/celare-<version>-darwin.tar.gz, checksums
 #   make run       build the app and open it
 #   make site      deploy site/ to celare.omarov.sh
+#   make icon      redraw app/AppIcon.icns from the mark in app/Sources/Celare/Mark.swift
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 LDFLAGS := -s -w -X github.com/Mergemat/celare/internal/cli.Version=$(VERSION)
 DIST    := dist
 APP     := $(DIST)/Celare.app
 
-.PHONY: test cli app release run site clean
+.PHONY: test cli app release run site icon clean
 
 test:
 	go test ./...
@@ -32,6 +33,7 @@ app: cli
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp "$$(cd app && swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Celare" $(APP)/Contents/MacOS/Celare
 	cp $(DIST)/celare $(APP)/Contents/Resources/celare
+	cp app/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	sed 's/VERSION/$(VERSION)/g' app/Info.plist > $(APP)/Contents/Info.plist
 	codesign --force --sign - $(APP)
 
@@ -42,6 +44,17 @@ release: app
 
 run: app
 	open $(APP)
+
+icon:
+	cd app && swift build -c release
+	rm -rf $(DIST)/AppIcon.iconset && mkdir -p $(DIST)/AppIcon.iconset
+	app/.build/release/Celare --render-icon $(DIST)/icon-1024.png
+	for size in 16 32 128 256 512; do \
+		sips -z $$size $$size $(DIST)/icon-1024.png --out $(DIST)/AppIcon.iconset/icon_$${size}x$${size}.png >/dev/null; \
+		double=$$((size * 2)); \
+		sips -z $$double $$double $(DIST)/icon-1024.png --out $(DIST)/AppIcon.iconset/icon_$${size}x$${size}@2x.png >/dev/null; \
+	done
+	iconutil -c icns $(DIST)/AppIcon.iconset -o app/AppIcon.icns
 
 site:
 	cd site && vercel deploy --prod --yes

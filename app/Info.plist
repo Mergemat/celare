@@ -6,6 +6,8 @@
 	<string>sh.celare.app</string>
 	<key>CFBundleName</key>
 	<string>Celare</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>Celare</string>
 	<key>CFBundlePackageType</key>

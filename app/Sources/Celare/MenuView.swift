@@ -29,9 +29,9 @@ struct MenuView: View {
 
     private var topLine: some View {
         HStack(spacing: 6) {
-            Image(systemName: isUp ? "shield.lefthalf.filled" : "shield")
-                .font(.system(size: 11, weight: .semibold))
+            MarkView(dot: isUp)
                 .foregroundStyle(isUp ? AnyShapeStyle(Palette.blueDot) : AnyShapeStyle(.secondary))
+                .frame(width: 12, height: 12)
             Text("celare").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
             Spacer()
             Circle().fill(stateColor).frame(width: 6, height: 6)
