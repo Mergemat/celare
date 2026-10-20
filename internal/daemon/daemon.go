@@ -1,12 +1,14 @@
-// Package daemon owns the tunnel's lifecycle. Every change can be made
-// provisional: unless it is confirmed in time, or if a probe through the
-// new state fails, the daemon puts the previous state back by itself.
-// That is what lets an agent switch nodes over the very connection it is
-// using without stranding itself offline.
+// Package daemon owns the tunnel's lifecycle. Every change to it is a
+// Change with an id. A change can be provisional: unless it is confirmed
+// in time, or if a probe through the new tunnel fails, the daemon puts
+// the previous tunnel back by itself. That is what lets an agent switch
+// nodes over the very connection it is using without stranding itself.
 package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -16,15 +18,15 @@ import (
 	"github.com/Mergemat/celare/internal/node"
 )
 
-// Spec is a fully resolved tunnel: the node and the routing that was in
-// config.toml when the change was made. Rolling back restores a Spec as
-// it was, even if config.toml has been edited since.
+// Spec is a fully resolved tunnel: a node plus the policy from
+// config.toml at the time. Reverting restores a Spec exactly, even if
+// config.toml has been edited since.
 type Spec struct {
-	NodeName string        `json:"node"`
-	Node     node.Node     `json:"-"`
-	Default  config.Action `json:"default"`
-	Rules    []config.Rule `json:"rules"`
-	DNS      []string      `json:"dns"`
+	NodeName string
+	Node     node.Node
+	Default  config.Action
+	Rules    []config.Rule
+	DNS      []string
 }
 
 // Tunnel brings a Spec up on the system and takes it down.
@@ -44,44 +46,90 @@ type Prober interface {
 	Probe(ctx context.Context, url string) error
 }
 
-// Change moves the tunnel to Spec, or down when Spec is nil.
-type Change struct {
-	Spec *Spec
-	// ConfirmWithin, when set, reverts the change unless Confirm is
-	// called before it elapses.
+type Action string
+
+const (
+	Connect    Action = "connect"
+	Disconnect Action = "disconnect"
+	Apply      Action = "apply"
+)
+
+type State string
+
+const (
+	Planned   State = "planned" // a dry run; nothing changed
+	Pending   State = "pending" // applied, waiting for confirmation
+	Committed State = "committed"
+	Reverted  State = "reverted"
+	Failed    State = "failed" // never took effect
+)
+
+// Request asks for a change. Spec nil means down.
+type Request struct {
+	Action Action
+	Spec   *Spec
+	// ConfirmWithin, when set, reverts the change unless it is confirmed
+	// before it elapses.
 	ConfirmWithin time.Duration
-	// Probe, when set, is fetched through the new state; failure reverts
-	// the change immediately.
-	Probe string
+	// Probe, when set, is fetched through the new tunnel; failure
+	// reverts the change at once.
+	Probe  string
+	DryRun bool
 }
 
-type Pending struct {
-	Deadline  time.Time `json:"deadline"`
-	RevertsTo string    `json:"revertsTo"`
+// Endpoint is one side of a change; nil means the tunnel is down.
+type Endpoint struct {
+	Node string `json:"node"`
 }
 
+type Change struct {
+	ID        string     `json:"id"`
+	Action    Action     `json:"action"`
+	State     State      `json:"state"`
+	From      *Endpoint  `json:"from"`
+	To        *Endpoint  `json:"to"`
+	Diff      Diff       `json:"diff"`
+	Probe     string     `json:"probe,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	Deadline  *time.Time `json:"deadline,omitempty"`
+	SettledAt *time.Time `json:"settledAt,omitempty"`
+	// Reason explains a reverted or failed change.
+	Reason string `json:"reason,omitempty"`
+
+	from, to *Spec
+	stop     func() bool
+}
+
+// TunnelState is the running state.
+type TunnelState struct {
+	State   string    `json:"state"` // "up" or "down"
+	Node    string    `json:"node,omitempty"`
+	Since   time.Time `json:"since"`
+	Pending *Change   `json:"pending,omitempty"`
+}
+
+// Event is something that happened, in order. Seq only grows.
 type Event struct {
+	Seq     int64     `json:"seq"`
 	Time    time.Time `json:"time"`
+	Kind    string    `json:"kind"` // change.committed, change.pending, change.reverted, change.failed, tunnel.restarted
+	Change  string    `json:"change,omitempty"`
 	Message string    `json:"message"`
 }
 
-type Status struct {
-	State     string    `json:"state"` // "up" or "down"
-	Node      string    `json:"node,omitempty"`
-	Since     time.Time `json:"since"`
-	Pending   *Pending  `json:"pending,omitempty"`
-	LastEvent *Event    `json:"lastEvent,omitempty"`
-	Events    []Event   `json:"events,omitempty"`
-}
-
-const maxEvents = 20
-
 // Errors callers can branch on.
 var (
-	ErrPending        = errors.New("a change is waiting for confirmation")
+	ErrPending        = errors.New("a change is pending")
 	ErrNothingPending = errors.New("no change is pending")
+	ErrNotPending     = errors.New("change is not pending")
+	ErrNotFound       = errors.New("no such change")
 	ErrProbeFailed    = errors.New("probe failed")
 	ErrStartFailed    = errors.New("tunnel failed to start")
+)
+
+const (
+	keepChanges = 50
+	keepEvents  = 200
 )
 
 type Daemon struct {
@@ -89,29 +137,32 @@ type Daemon struct {
 	clock  Clock
 	prober Prober
 
-	// op serializes state transitions; mu guards the fields below so
-	// Status stays responsive while a transition (or probe) runs.
-	op sync.Mutex
-	mu sync.Mutex
-
 	// OnSettled, if set, is called with the running spec whenever no
 	// change is left pending, i.e. whenever the state is committed.
 	OnSettled func(*Spec)
 
+	// op serializes transitions; mu guards the fields below so reads stay
+	// responsive while a transition or probe runs.
+	op sync.Mutex
+	mu sync.Mutex
+
 	current *Spec
 	since   time.Time
-	pending *pendingChange
+	pending *Change
+	changes []*Change // oldest first
 	events  []Event
-}
-
-type pendingChange struct {
-	Pending
-	previous *Spec
-	stop     func() bool
+	seq     int64
 }
 
 func New(t Tunnel, c Clock, p Prober) *Daemon {
 	return &Daemon{tunnel: t, clock: c, prober: p, since: c.Now()}
+}
+
+func endpoint(s *Spec) *Endpoint {
+	if s == nil {
+		return nil
+	}
+	return &Endpoint{Node: s.NodeName}
 }
 
 func describe(s *Spec) string {
@@ -121,56 +172,101 @@ func describe(s *Spec) string {
 	return s.NodeName
 }
 
-// Apply performs a change. On failure the previous state is back in
-// place when it returns.
-func (d *Daemon) Apply(ctx context.Context, c Change) error {
+func newID() string {
+	b := make([]byte, 3)
+	rand.Read(b)
+	return "c" + hex.EncodeToString(b)
+}
+
+// Apply performs (or with DryRun, plans) a change. Whatever happens, the
+// tunnel is in a known state when it returns and the change says which.
+func (d *Daemon) Apply(ctx context.Context, r Request) (Change, error) {
 	d.op.Lock()
 	defer d.op.Unlock()
 
 	d.mu.Lock()
 	pending, previous := d.pending, d.current
 	d.mu.Unlock()
+
+	c := &Change{
+		ID:        newID(),
+		Action:    r.Action,
+		From:      endpoint(previous),
+		To:        endpoint(r.Spec),
+		Diff:      diffSpecs(previous, r.Spec),
+		Probe:     r.Probe,
+		CreatedAt: d.clock.Now(),
+		from:      previous,
+		to:        r.Spec,
+	}
+	if r.DryRun {
+		c.State = Planned
+		return *c, nil
+	}
 	if pending != nil {
-		return fmt.Errorf("%w until %s; run `celare confirm` to keep it or `celare rollback` to undo it first",
-			ErrPending, pending.Deadline.Format(time.RFC3339))
+		return Change{}, fmt.Errorf("%w: %s (%s) until %s; run `celare confirm %s` to keep it or `celare revert %s` to undo it first",
+			ErrPending, pending.ID, pending.Action, pending.Deadline.Format(time.RFC3339), pending.ID, pending.ID)
 	}
 
-	if err := d.switchTo(previous, c.Spec); err != nil {
-		return err
+	if err := d.switchTo(previous, r.Spec); err != nil {
+		c.State, c.Reason = Failed, err.Error()
+		d.settle(c, "change.failed", fmt.Sprintf("%s %s failed: %v", c.Action, describe(r.Spec), err))
+		return *c, err
 	}
-	if c.Probe != "" {
+	if r.Probe != "" {
 		pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := d.prober.Probe(pctx, c.Probe)
+		err := d.prober.Probe(pctx, r.Probe)
 		cancel()
 		if err != nil {
-			restoreErr := d.switchTo(c.Spec, previous)
-			msg := fmt.Sprintf("%s through %s: %v; rolled back to %s", c.Probe, describe(c.Spec), err, describe(previous))
-			d.record("probe failed: " + msg)
-			d.settle()
-			return errors.Join(fmt.Errorf("%w: %s", ErrProbeFailed, msg), restoreErr)
+			reason := fmt.Sprintf("%s through %s: %v", r.Probe, describe(r.Spec), err)
+			restoreErr := d.switchTo(r.Spec, previous)
+			c.State, c.Reason = Reverted, "probe failed: "+reason
+			d.settle(c, "change.reverted", fmt.Sprintf("%s reverted to %s: probe failed: %s", c.ID, describe(previous), reason))
+			return *c, errors.Join(fmt.Errorf("%w: %s; reverted to %s", ErrProbeFailed, reason, describe(previous)), restoreErr)
 		}
 	}
-	if c.ConfirmWithin > 0 {
-		p := &pendingChange{
-			Pending:  Pending{Deadline: d.clock.Now().Add(c.ConfirmWithin), RevertsTo: describe(previous)},
-			previous: previous,
-		}
-		p.stop = d.clock.AfterFunc(c.ConfirmWithin, func() { d.expire(p, c.ConfirmWithin) })
+	if r.ConfirmWithin > 0 {
+		deadline := d.clock.Now().Add(r.ConfirmWithin)
+		c.State, c.Deadline = Pending, &deadline
+		c.stop = d.clock.AfterFunc(r.ConfirmWithin, func() { d.expire(c, r.ConfirmWithin) })
 		d.mu.Lock()
-		d.pending = p
+		d.pending = c
+		d.changes = appendCapped(d.changes, c)
 		d.mu.Unlock()
-		d.record(fmt.Sprintf("switched to %s; reverts to %s at %s unless confirmed", describe(c.Spec), describe(previous), p.Deadline.Format(time.RFC3339)))
-		return nil
+		d.record("change.pending", c.ID, fmt.Sprintf("%s switched to %s; reverts to %s at %s unless confirmed",
+			c.ID, describe(r.Spec), describe(previous), deadline.Format(time.RFC3339)))
+		return *c, nil
 	}
-	d.record("switched to " + describe(c.Spec))
-	d.settle()
-	return nil
+	c.State = Committed
+	d.settle(c, "change.committed", fmt.Sprintf("%s switched to %s", c.ID, describe(r.Spec)))
+	return *c, nil
 }
 
-func (d *Daemon) settle() {
-	if d.OnSettled != nil {
-		d.OnSettled(d.Current())
+// settle finishes a change that is not pending: stamps it, keeps it in
+// the history, records the event and reports the committed state.
+func (d *Daemon) settle(c *Change, kind, msg string) {
+	now := d.clock.Now()
+	c.SettledAt = &now
+	d.mu.Lock()
+	if d.pending == c {
+		d.pending = nil // already in the history since it became pending
+	} else {
+		d.changes = appendCapped(d.changes, c)
 	}
+	current := d.current
+	d.mu.Unlock()
+	d.record(kind, c.ID, msg)
+	if d.OnSettled != nil {
+		d.OnSettled(current)
+	}
+}
+
+func appendCapped(cs []*Change, c *Change) []*Change {
+	cs = append(cs, c)
+	if len(cs) > keepChanges {
+		cs = cs[len(cs)-keepChanges:]
+	}
+	return cs
 }
 
 // switchTo replaces from with to on the system. If to fails to start,
@@ -187,10 +283,9 @@ func (d *Daemon) switchTo(from, to *Spec) error {
 			if from != nil {
 				if err := d.tunnel.Start(*from); err != nil {
 					d.setCurrent(nil)
-					return fmt.Errorf("%w; restoring %s also failed: %v, so the tunnel is down", startErr, describe(from), err)
+					return fmt.Errorf("%w; restoring %s also failed (%v), so the tunnel is down", startErr, describe(from), err)
 				}
 			}
-			d.record(fmt.Sprintf("%v; restored %s", startErr, describe(from)))
 			return fmt.Errorf("%w; restored %s", startErr, describe(from))
 		}
 	}
@@ -204,63 +299,76 @@ func (d *Daemon) setCurrent(s *Spec) {
 	d.mu.Unlock()
 }
 
-func (d *Daemon) expire(p *pendingChange, after time.Duration) {
+func (d *Daemon) expire(c *Change, after time.Duration) {
 	d.op.Lock()
 	defer d.op.Unlock()
 	d.mu.Lock()
-	if d.pending != p {
-		d.mu.Unlock()
+	still := d.pending == c
+	d.mu.Unlock()
+	if !still {
 		return
 	}
-	d.pending = nil
-	current := d.current
-	d.mu.Unlock()
-	err := d.switchTo(current, p.previous)
-	msg := fmt.Sprintf("change to %s was not confirmed within %s; rolled back to %s", describe(current), after, describe(p.previous))
+	err := d.switchTo(c.to, c.from)
+	c.State = Reverted
+	c.Reason = fmt.Sprintf("not confirmed within %s", after)
 	if err != nil {
-		msg += fmt.Sprintf(" (with errors: %v)", err)
+		c.Reason += fmt.Sprintf("; reverting hit errors: %v", err)
 	}
-	d.record(msg)
-	d.settle()
+	d.settle(c, "change.reverted", fmt.Sprintf("%s reverted to %s: %s", c.ID, describe(c.from), c.Reason))
 }
 
-// Confirm keeps the pending change.
-func (d *Daemon) Confirm() error {
-	d.op.Lock()
-	defer d.op.Unlock()
+// resolvePending finds the change id names (empty: the pending one) and
+// checks it is the pending one.
+func (d *Daemon) resolvePending(id string) (*Change, error) {
 	d.mu.Lock()
-	p := d.pending
-	d.pending = nil
-	current := d.current
-	d.mu.Unlock()
-	if p == nil {
-		return fmt.Errorf("nothing to confirm: %w", ErrNothingPending)
+	defer d.mu.Unlock()
+	if id == "" {
+		if d.pending == nil {
+			return nil, ErrNothingPending
+		}
+		return d.pending, nil
 	}
-	p.stop()
-	d.record("confirmed " + describe(current))
-	d.settle()
-	return nil
+	if d.pending != nil && d.pending.ID == id {
+		return d.pending, nil
+	}
+	for _, c := range d.changes {
+		if c.ID == id {
+			return nil, fmt.Errorf("%w: %s is %s", ErrNotPending, id, c.State)
+		}
+	}
+	return nil, fmt.Errorf("%w: %s; run `celare changes` for recent ids", ErrNotFound, id)
 }
 
-// Rollback undoes the pending change now.
-func (d *Daemon) Rollback() error {
+// Confirm keeps a pending change. id "" means whichever is pending.
+func (d *Daemon) Confirm(id string) (Change, error) {
 	d.op.Lock()
 	defer d.op.Unlock()
-	d.mu.Lock()
-	p := d.pending
-	d.pending = nil
-	current := d.current
-	d.mu.Unlock()
-	if p == nil {
-		return fmt.Errorf("nothing to roll back: %w", ErrNothingPending)
+	c, err := d.resolvePending(id)
+	if err != nil {
+		return Change{}, err
 	}
-	p.stop()
-	if err := d.switchTo(current, p.previous); err != nil {
-		return err
+	c.stop()
+	c.State = Committed
+	d.settle(c, "change.committed", fmt.Sprintf("%s confirmed; %s kept", c.ID, describe(c.to)))
+	return *c, nil
+}
+
+// Revert undoes a pending change now. id "" means whichever is pending.
+func (d *Daemon) Revert(id string) (Change, error) {
+	d.op.Lock()
+	defer d.op.Unlock()
+	c, err := d.resolvePending(id)
+	if err != nil {
+		return Change{}, err
 	}
-	d.record(fmt.Sprintf("rolled back to %s on request", describe(p.previous)))
-	d.settle()
-	return nil
+	c.stop()
+	err = d.switchTo(c.to, c.from)
+	c.State, c.Reason = Reverted, "reverted on request"
+	if err != nil {
+		c.Reason += fmt.Sprintf("; reverting hit errors: %v", err)
+	}
+	d.settle(c, "change.reverted", fmt.Sprintf("%s reverted to %s on request", c.ID, describe(c.from)))
+	return *c, err
 }
 
 // Restart stops and starts the running spec again, e.g. after the
@@ -273,9 +381,10 @@ func (d *Daemon) Restart(reason string) error {
 		return nil
 	}
 	if err := d.switchTo(current, current); err != nil {
+		d.record("tunnel.restarted", "", fmt.Sprintf("restarting %s (%s) failed: %v", describe(current), reason, err))
 		return err
 	}
-	d.record("restarted " + describe(current) + ": " + reason)
+	d.record("tunnel.restarted", "", fmt.Sprintf("restarted %s: %s", describe(current), reason))
 	return nil
 }
 
@@ -286,29 +395,62 @@ func (d *Daemon) Current() *Spec {
 	return d.current
 }
 
-func (d *Daemon) record(msg string) {
+func (d *Daemon) record(kind, change, msg string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.events = append(d.events, Event{Time: d.clock.Now(), Message: msg})
-	if len(d.events) > maxEvents {
-		d.events = d.events[len(d.events)-maxEvents:]
+	d.seq++
+	d.events = append(d.events, Event{Seq: d.seq, Time: d.clock.Now(), Kind: kind, Change: change, Message: msg})
+	if len(d.events) > keepEvents {
+		d.events = d.events[len(d.events)-keepEvents:]
 	}
 }
 
-func (d *Daemon) Status() Status {
+func (d *Daemon) Tunnel() TunnelState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	st := Status{State: "down", Since: d.since, Events: append([]Event(nil), d.events...)}
+	st := TunnelState{State: "down", Since: d.since}
 	if d.current != nil {
 		st.State, st.Node = "up", d.current.NodeName
 	}
 	if d.pending != nil {
-		p := d.pending.Pending
+		p := *d.pending
 		st.Pending = &p
 	}
-	if n := len(d.events); n > 0 {
-		e := d.events[n-1]
-		st.LastEvent = &e
-	}
 	return st
+}
+
+// Change returns a change from the history.
+func (d *Daemon) Change(id string) (Change, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.changes {
+		if c.ID == id {
+			return *c, true
+		}
+	}
+	return Change{}, false
+}
+
+// Changes returns recent changes, newest first.
+func (d *Daemon) Changes() []Change {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]Change, 0, len(d.changes))
+	for i := len(d.changes) - 1; i >= 0; i-- {
+		out = append(out, *d.changes[i])
+	}
+	return out
+}
+
+// Events returns the events with Seq greater than after, oldest first.
+func (d *Daemon) Events(after int64) []Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []Event
+	for _, e := range d.events {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	return out
 }

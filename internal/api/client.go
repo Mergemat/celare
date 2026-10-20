@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/Mergemat/celare/internal/daemon"
 )
 
 // Client talks to the daemon.
@@ -20,7 +23,7 @@ func NewClient(socket string) *Client {
 	return &Client{
 		socket: socket,
 		http: &http.Client{
-			// Probes run inside a request, so allow more than they take.
+			// A change with a probe holds the request while it probes.
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -32,58 +35,78 @@ func NewClient(socket string) *Client {
 	}
 }
 
-func (c *Client) Status(ctx context.Context) (Status, error) {
-	return c.call(ctx, http.MethodGet, "/v1/status", nil)
+func (c *Client) Tunnel(ctx context.Context) (Tunnel, error) {
+	var t Tunnel
+	return t, c.call(ctx, http.MethodGet, "/v1/tunnel", nil, &t)
 }
 
-func (c *Client) Up(ctx context.Context, r ChangeRequest) (Status, error) {
-	return c.call(ctx, http.MethodPost, "/v1/up", r)
+func (c *Client) CreateChange(ctx context.Context, r ChangeRequest) (daemon.Change, error) {
+	var ch daemon.Change
+	return ch, c.call(ctx, http.MethodPost, "/v1/changes", r, &ch)
 }
 
-func (c *Client) Down(ctx context.Context, r ChangeRequest) (Status, error) {
-	return c.call(ctx, http.MethodPost, "/v1/down", r)
+func (c *Client) Changes(ctx context.Context) ([]daemon.Change, error) {
+	var cs []daemon.Change
+	return cs, c.call(ctx, http.MethodGet, "/v1/changes", nil, &cs)
 }
 
-func (c *Client) Reload(ctx context.Context, r ChangeRequest) (Status, error) {
-	return c.call(ctx, http.MethodPost, "/v1/reload", r)
+// Change fetches one change; id "pending" is the pending one.
+func (c *Client) Change(ctx context.Context, id string) (daemon.Change, error) {
+	var ch daemon.Change
+	return ch, c.call(ctx, http.MethodGet, "/v1/changes/"+orPending(id), nil, &ch)
 }
 
-func (c *Client) Confirm(ctx context.Context) (Status, error) {
-	return c.call(ctx, http.MethodPost, "/v1/confirm", nil)
+// Confirm keeps a pending change; id "" means whichever is pending.
+func (c *Client) Confirm(ctx context.Context, id string) (daemon.Change, error) {
+	var ch daemon.Change
+	return ch, c.call(ctx, http.MethodPost, "/v1/changes/"+orPending(id)+"/confirm", nil, &ch)
 }
 
-func (c *Client) Rollback(ctx context.Context) (Status, error) {
-	return c.call(ctx, http.MethodPost, "/v1/rollback", nil)
+// Revert undoes a pending change; id "" means whichever is pending.
+func (c *Client) Revert(ctx context.Context, id string) (daemon.Change, error) {
+	var ch daemon.Change
+	return ch, c.call(ctx, http.MethodPost, "/v1/changes/"+orPending(id)+"/revert", nil, &ch)
 }
 
-func (c *Client) call(ctx context.Context, method, path string, body any) (Status, error) {
+func (c *Client) Events(ctx context.Context, after int64) ([]daemon.Event, error) {
+	var es []daemon.Event
+	return es, c.call(ctx, http.MethodGet, "/v1/events?after="+strconv.FormatInt(after, 10), nil, &es)
+}
+
+func orPending(id string) string {
+	if id == "" {
+		return "pending"
+	}
+	return id
+}
+
+func (c *Client) call(ctx context.Context, method, path string, body, out any) error {
 	var buf bytes.Buffer
 	if body != nil {
 		json.NewEncoder(&buf).Encode(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://celare"+path, &buf)
 	if err != nil {
-		return Status{}, err
+		return err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Status{}, &Error{
+		return &Error{
 			Code:    "daemon_unreachable",
 			Message: fmt.Sprintf("cannot reach the celare daemon at %s: %v", c.socket, err),
-			Hint:    "run `sudo celare install` once to install it, or `celare doctor` to see what is wrong",
+			Hint:    "run `sudo celare service install` once, or `celare doctor` to see what is wrong",
 		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		var e struct{ Error *Error }
 		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil || e.Error == nil {
-			return Status{}, &Error{Code: "internal", Message: "daemon answered " + resp.Status}
+			return &Error{Code: "internal", Message: "daemon answered " + resp.Status}
 		}
-		return Status{}, e.Error
+		return e.Error
 	}
-	var st Status
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return Status{}, fmt.Errorf("daemon sent an unreadable status: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("daemon sent an unreadable response: %w", err)
 	}
-	return st, nil
+	return nil
 }

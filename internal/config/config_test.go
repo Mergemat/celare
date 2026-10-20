@@ -11,7 +11,6 @@ import (
 )
 
 const sample = `# my config
-active = "tokyo"
 default = "proxy"
 dns = ["https://1.1.1.1/dns-query"]
 
@@ -25,6 +24,7 @@ url = "https://panel.example.test/sub/abc"
 
 # LAN stays local
 [[rule]]
+name = "lan"
 action = "direct"
 ips = ["192.168.0.0/16"]
 
@@ -39,13 +39,12 @@ func TestParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.Config{
-		Active:        "tokyo",
 		Default:       config.Proxy,
 		DNS:           []string{"https://1.1.1.1/dns-query"},
 		Nodes:         []config.NodeEntry{{Name: "tokyo", Link: "trojan://pw@203.0.113.10:8444?security=tls&sni=203.0.113.10#Tokyo"}},
 		Subscriptions: []config.Subscription{{Name: "main", URL: "https://panel.example.test/sub/abc"}},
 		Rules: []config.Rule{
-			{Action: config.Direct, IPs: []string{"192.168.0.0/16"}},
+			{Name: "lan", Action: config.Direct, IPs: []string{"192.168.0.0/16"}},
 			{Action: config.Block, Domains: []string{"domain:ads.example.test"}},
 		},
 	}
@@ -55,7 +54,7 @@ func TestParse(t *testing.T) {
 }
 
 func TestParseReportsTheLineOfASyntaxError(t *testing.T) {
-	_, err := config.Parse([]byte("active = \"x\"\ndefault = proxy\n"))
+	_, err := config.Parse([]byte("dns = []\ndefault = proxy\n"))
 	if err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Fatalf("err = %v, want a message naming line 2", err)
 	}
@@ -63,39 +62,27 @@ func TestParseReportsTheLineOfASyntaxError(t *testing.T) {
 
 func TestCheckFindsEveryProblem(t *testing.T) {
 	cfg := config.Config{
-		Active:  "nowhere",
 		Default: "sideways",
 		Nodes: []config.NodeEntry{
 			{Name: "a", Link: "trojan://pw@example.test:443#a"},
 			{Name: "a", Link: "nonsense"},
 		},
-		Rules: []config.Rule{{Action: "maybe"}, {Action: config.Direct}},
+		Rules: []config.Rule{
+			{Action: "maybe"},
+			{Action: config.Direct},
+			{Name: "7", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
+			{Name: "lan", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
+			{Name: "lan", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
+		},
 	}
 	var got []string
-	for _, p := range cfg.Check(nil) {
+	for _, p := range cfg.Check() {
 		got = append(got, p.Field)
 	}
-	want := []string{"active", "default", "node[2].name", "node[2].link", "rule[1].action", "rule[2]"}
+	want := []string{"default", "node[2].name", "node[2].link", "rule[1].action", "rule[2]", "rule[3].name", "rule[5].name"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("problem fields mismatch (-want +got):\n%s", diff)
 	}
-}
-
-func TestSetActiveKeepsComments(t *testing.T) {
-	path := writeFile(t, sample)
-	if err := config.SetActive(path, "main/Osaka"); err != nil {
-		t.Fatal(err)
-	}
-	want := strings.Replace(sample, `active = "tokyo"`, `active = "main/Osaka"`, 1)
-	assertFile(t, path, want)
-}
-
-func TestSetActiveAddsTheKeyBeforeTheFirstTable(t *testing.T) {
-	path := writeFile(t, "# hi\n\n[[node]]\nname = \"a\"\nlink = \"trojan://pw@example.test:443#a\"\n")
-	if err := config.SetActive(path, "a"); err != nil {
-		t.Fatal(err)
-	}
-	assertFile(t, path, "# hi\n\nactive = \"a\"\n\n[[node]]\nname = \"a\"\nlink = \"trojan://pw@example.test:443#a\"\n")
 }
 
 func TestAddAndRemoveNodeKeepComments(t *testing.T) {
@@ -116,8 +103,8 @@ func TestAddAndRemoveNodeKeepComments(t *testing.T) {
 func TestRemoveNodeRejectsUnknownName(t *testing.T) {
 	path := writeFile(t, sample)
 	err := config.RemoveNode(path, "nope")
-	if err == nil || !strings.Contains(err.Error(), "celare node list") {
-		t.Fatalf("err = %v, want a hint to run celare node list", err)
+	if err == nil || !strings.Contains(err.Error(), "celare nodes list") {
+		t.Fatalf("err = %v, want a hint to run celare nodes list", err)
 	}
 	assertFile(t, path, sample)
 }
@@ -148,5 +135,44 @@ func TestParseRejectsUnknownKeys(t *testing.T) {
 	_, err := config.Parse([]byte("dsn = [\"1.1.1.1\"]\n"))
 	if err == nil || !strings.Contains(err.Error(), `"dsn"`) {
 		t.Fatalf("err = %v, want it to name the unknown key dsn", err)
+	}
+}
+
+func TestAddRuleFirstGoesBeforeTheOtherRules(t *testing.T) {
+	path := writeFile(t, sample)
+	rule := config.Rule{Name: "ai", Action: config.Proxy, Domains: []string{"domain:openai.com", "domain:anthropic.com"}}
+	if err := config.AddRule(path, rule, true); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(sample, "# LAN stays local\n[[rule]]",
+		"[[rule]]\nname = \"ai\"\naction = \"proxy\"\ndomains = [\"domain:openai.com\", \"domain:anthropic.com\"]\n\n# LAN stays local\n[[rule]]", 1)
+	assertFile(t, path, want)
+}
+
+func TestAddRuleLastAppends(t *testing.T) {
+	path := writeFile(t, sample)
+	if err := config.AddRule(path, config.Rule{Action: config.Block, IPs: []string{"203.0.113.0/24"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, path, sample+"\n[[rule]]\naction = \"block\"\nips = [\"203.0.113.0/24\"]\n")
+}
+
+func TestRemoveRuleByPositionOrName(t *testing.T) {
+	path := writeFile(t, sample)
+	if err := config.RemoveRule(path, "2"); err != nil {
+		t.Fatal(err)
+	}
+	withoutBlock := strings.Replace(sample, "\n[[rule]]\naction = \"block\"\ndomains = [\"domain:ads.example.test\"]\n", "", 1)
+	assertFile(t, path, withoutBlock)
+
+	if err := config.RemoveRule(path, "lan"); err != nil {
+		t.Fatal(err)
+	}
+	// The comment directly above a table belongs to it.
+	withoutLAN := strings.Replace(withoutBlock, "\n# LAN stays local\n[[rule]]\nname = \"lan\"\naction = \"direct\"\nips = [\"192.168.0.0/16\"]\n", "", 1)
+	assertFile(t, path, withoutLAN)
+
+	if err := config.RemoveRule(path, "5"); err == nil || !strings.Contains(err.Error(), "celare rules list") {
+		t.Fatalf("err = %v, want a hint to list rules", err)
 	}
 }

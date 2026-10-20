@@ -16,6 +16,9 @@ const (
 // "domain:example.com", "full:host", "keyword:x", "geosite:cn",
 // "10.0.0.0/8", "geoip:private".
 type Rule struct {
+	// Name is optional; named rules can be removed by name and show up
+	// by name in `celare rules explain`.
+	Name    string   `toml:"name,omitempty" json:"name,omitempty"`
 	Action  Action   `toml:"action" json:"action"`
 	Domains []string `toml:"domains,omitempty" json:"domains,omitempty"`
 	IPs     []string `toml:"ips,omitempty" json:"ips,omitempty"`

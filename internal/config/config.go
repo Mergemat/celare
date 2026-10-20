@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -11,8 +12,6 @@ import (
 
 // Config mirrors config.toml.
 type Config struct {
-	// Active is a [[node]] name or "<subscription>/<node name>".
-	Active        string         `toml:"active" json:"active"`
 	Default       Action         `toml:"default" json:"default"`
 	DNS           []string       `toml:"dns" json:"dns"`
 	Nodes         []NodeEntry    `toml:"node" json:"nodes"`
@@ -61,15 +60,11 @@ func Parse(b []byte) (Config, error) {
 	return c, nil
 }
 
-// Check returns every problem in the config. subscriptionNodes maps each
-// subscription name to the node names it currently provides.
-func (c Config) Check(subscriptionNodes map[string][]string) []Problem {
+// Check returns every problem in the config.
+func (c Config) Check() []Problem {
 	var ps []Problem
 	add := func(field, format string, args ...any) {
 		ps = append(ps, Problem{Field: field, Message: fmt.Sprintf(format, args...)})
-	}
-	if c.Active != "" && !c.hasNode(c.Active, subscriptionNodes) {
-		add("active", "no node named %q; run `celare node list` for the names", c.Active)
 	}
 	switch c.Default {
 	case "", Proxy, Direct, Block:
@@ -92,8 +87,17 @@ func (c Config) Check(subscriptionNodes map[string][]string) []Problem {
 			add(field+".link", "%v", err)
 		}
 	}
+	ruleNames := map[string]bool{}
 	for i, r := range c.Rules {
 		field := fmt.Sprintf("rule[%d]", i+1)
+		if r.Name != "" {
+			if _, err := strconv.Atoi(r.Name); err == nil {
+				add(field+".name", "%q is a number, which would be mistaken for a position", r.Name)
+			} else if ruleNames[r.Name] {
+				add(field+".name", "%q is used by an earlier rule", r.Name)
+			}
+			ruleNames[r.Name] = true
+		}
 		switch r.Action {
 		case Proxy, Direct, Block:
 		default:
@@ -105,21 +109,4 @@ func (c Config) Check(subscriptionNodes map[string][]string) []Problem {
 		}
 	}
 	return ps
-}
-
-func (c Config) hasNode(name string, subscriptionNodes map[string][]string) bool {
-	if sub, n, ok := strings.Cut(name, "/"); ok {
-		for _, have := range subscriptionNodes[sub] {
-			if have == n {
-				return true
-			}
-		}
-		return false
-	}
-	for _, n := range c.Nodes {
-		if n.Name == name {
-			return true
-		}
-	}
-	return false
 }

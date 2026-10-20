@@ -31,6 +31,14 @@ func quote(s string) string {
 	return b.String()
 }
 
+func quoteList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = quote(s)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
 // decodeValue decodes a single TOML value literal into v.V.
 func decodeValue(literal string, v any) (toml.MetaData, error) {
 	return toml.Decode("V = "+literal, v)

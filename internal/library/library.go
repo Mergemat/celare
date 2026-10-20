@@ -151,19 +151,6 @@ func (l Library) Nodes(cfg config.Config) ([]Entry, error) {
 	return out, nil
 }
 
-// SubscriptionNodeNames maps each subscription to its node names, the
-// shape config.Check wants.
-func (l Library) SubscriptionNodeNames(cfg config.Config) map[string][]string {
-	entries, _ := l.Nodes(cfg)
-	out := map[string][]string{}
-	for _, e := range entries {
-		if sub, name, ok := strings.Cut(e.Name, "/"); ok && e.Source != "config" {
-			out[sub] = append(out[sub], name)
-		}
-	}
-	return out
-}
-
 // Resolve finds a node by its listed name.
 func (l Library) Resolve(cfg config.Config, name string) (node.Node, error) {
 	entries, err := l.Nodes(cfg)
@@ -175,7 +162,7 @@ func (l Library) Resolve(cfg config.Config, name string) (node.Node, error) {
 			return e.Node, nil
 		}
 	}
-	return node.Node{}, fmt.Errorf("no node named %q; run `celare node list` for the names", name)
+	return node.Node{}, fmt.Errorf("no node named %q; run `celare nodes list` for the names", name)
 }
 
 // linksOf returns the body as plain newline-separated links, decoding

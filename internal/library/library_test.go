@@ -70,8 +70,8 @@ func TestUpdateSubscriptionThenListAndResolve(t *testing.T) {
 func TestResolveUnknownNodeSuggestsListing(t *testing.T) {
 	lib := library.Library{Dir: t.TempDir()}
 	_, err := lib.Resolve(config.Config{}, "main/Nowhere")
-	if err == nil || !strings.Contains(err.Error(), "celare node list") {
-		t.Fatalf("err = %v, want a hint to run celare node list", err)
+	if err == nil || !strings.Contains(err.Error(), "celare nodes list") {
+		t.Fatalf("err = %v, want a hint to run celare nodes list", err)
 	}
 }
 

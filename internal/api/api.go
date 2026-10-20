@@ -1,5 +1,5 @@
 // Package api is the daemon's HTTP API over a unix socket, and the client
-// the CLI and the app use to talk to it.
+// the CLI and the app use to talk to it. See docs/design.md.
 package api
 
 import (
@@ -12,15 +12,17 @@ import (
 // DefaultSocket is where the installed daemon listens.
 const DefaultSocket = "/var/run/celare.sock"
 
-// ChangeRequest is the body of up, down and reload.
+// ChangeRequest is the body of POST /v1/changes.
 type ChangeRequest struct {
-	// Node to bring up; empty means config.toml's active node.
+	Action daemon.Action `json:"action"`
+	// Node for connect; empty reconnects the last node.
 	Node string `json:"node,omitempty"`
 	// Confirm is a duration ("30s"): the change reverts unless confirmed
 	// within it.
 	Confirm string `json:"confirm,omitempty"`
-	// Probe is a URL fetched through the new state; failure reverts it.
-	Probe string `json:"probe,omitempty"`
+	// Probe is a URL fetched through the new tunnel; failure reverts it.
+	Probe  string `json:"probe,omitempty"`
+	DryRun bool   `json:"dryRun,omitempty"`
 }
 
 func (r ChangeRequest) confirmWithin() (time.Duration, error) {
@@ -30,19 +32,19 @@ func (r ChangeRequest) confirmWithin() (time.Duration, error) {
 	return time.ParseDuration(r.Confirm)
 }
 
-// Status is the daemon's state plus what it knows about the system.
-type Status struct {
-	daemon.Status
+// Tunnel is GET /v1/tunnel: the daemon's state plus the system's.
+type Tunnel struct {
+	daemon.TunnelState
 	System *SystemInfo `json:"system,omitempty"`
 }
 
-// SystemInfo describes the machine-level side of the tunnel.
+// SystemInfo is the machine-level side of the tunnel.
 type SystemInfo struct {
 	// Interface is the physical interface the tunnel is bound to.
 	Interface string `json:"interface,omitempty"`
 	Tun       string `json:"tun,omitempty"`
-	// ForeignTunnels are other VPNs holding a default route. They compete
-	// with celare for traffic.
+	// ForeignTunnels are other VPNs holding a default route; they
+	// compete with celare for traffic.
 	ForeignTunnels []string `json:"foreignTunnels,omitempty"`
 }
 
@@ -52,6 +54,8 @@ type Error struct {
 	Message  string           `json:"message"`
 	Hint     string           `json:"hint,omitempty"`
 	Problems []config.Problem `json:"problems,omitempty"`
+	// Change is set when the failure is a change that failed or reverted.
+	Change *daemon.Change `json:"change,omitempty"`
 }
 
 func (e *Error) Error() string {

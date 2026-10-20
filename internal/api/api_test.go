@@ -28,9 +28,7 @@ type okProbe struct{}
 
 func (okProbe) Probe(context.Context, string) error { return nil }
 
-const configTOML = `active = "tokyo"
-
-[[node]]
+const configTOML = `[[node]]
 name = "tokyo"
 link = "trojan://pw@203.0.113.10:443?security=tls#Tokyo"
 
@@ -39,109 +37,188 @@ name = "osaka"
 link = "trojan://pw@203.0.113.11:443?security=tls#Osaka"
 
 [[rule]]
+name = "lan"
 action = "direct"
 ips = ["192.168.0.0/16"]
 `
 
-// serve runs the API on a unix socket in a temp dir and returns a client.
-func serve(t *testing.T, toml string) (*api.Client, *fakeTunnel, string) {
+type env struct {
+	client *api.Client
+	tun    *fakeTunnel
+	dir    string
+	sock   string
+}
+
+// serve runs the API on a unix socket and returns a client for it.
+func serve(t *testing.T, toml string) env {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tun := &fakeTunnel{}
+	// Unix socket paths are limited to 104 bytes on macOS and TempDir
+	// can be longer, so the socket goes in /tmp.
+	f, err := os.CreateTemp("/tmp", "celare-*.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	e := env{tun: &fakeTunnel{}, dir: dir, sock: f.Name()}
+	e.client = start(t, e)
+	return e
+}
+
+func start(t *testing.T, e env) *api.Client {
+	t.Helper()
 	srv := &api.Server{
-		Daemon:    daemon.New(tun, realClock{}, okProbe{}),
-		ConfigDir: dir,
-		StatePath: filepath.Join(dir, "state.json"),
+		Daemon:    daemon.New(e.tun, realClock{}, okProbe{}),
+		ConfigDir: e.dir,
+		StatePath: filepath.Join(e.dir, "state.json"),
 	}
-	// Unix socket paths are limited to ~104 bytes on macOS; TempDir can
-	// be longer, so the socket goes in /tmp.
-	sock, err := os.CreateTemp("/tmp", "celare-*.sock")
+	if err := srv.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop, err := srv.Listen(e.sock, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	sock.Close()
-	os.Remove(sock.Name())
-	stop, err := srv.Listen(sock.Name(), os.Getuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stop(); os.Remove(sock.Name()) })
-	return api.NewClient(sock.Name()), tun, dir
+	t.Cleanup(func() { stop(); os.Remove(e.sock) })
+	return api.NewClient(e.sock)
 }
 
-func TestUpUsesTheActiveNodeAndReportsStatus(t *testing.T) {
-	c, tun, _ := serve(t, configTOML)
-	st, err := c.Up(context.Background(), api.ChangeRequest{})
+var ctx = context.Background()
+
+func TestConnectThenTunnelShowsTheNode(t *testing.T) {
+	e := serve(t, configTOML)
+	c, err := e.client.CreateChange(ctx, api.ChangeRequest{Action: "connect", Node: "tokyo"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tun.running != "tokyo" || st.State != "up" || st.Node != "tokyo" {
-		t.Errorf("running %q, status %+v; want tokyo up", tun.running, st)
+	if c.State != daemon.Committed || e.tun.running != "tokyo" {
+		t.Errorf("change %+v, running %q; want committed on tokyo", c, e.tun.running)
+	}
+	tun, err := e.client.Tunnel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tun.State != "up" || tun.Node != "tokyo" {
+		t.Errorf("tunnel = %+v, want up on tokyo", tun)
 	}
 }
 
-func TestUpNamedNodeWithConfirmIsPending(t *testing.T) {
-	c, tun, _ := serve(t, configTOML)
-	st, err := c.Up(context.Background(), api.ChangeRequest{Node: "osaka", Confirm: "30s"})
+func TestConnectWithoutANodeReconnectsTheLastOne(t *testing.T) {
+	e := serve(t, configTOML)
+	mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "osaka"})
+	mustChange(t, e.client, api.ChangeRequest{Action: "disconnect"})
+	mustChange(t, e.client, api.ChangeRequest{Action: "connect"})
+	if e.tun.running != "osaka" {
+		t.Errorf("running %q, want osaka again", e.tun.running)
+	}
+}
+
+func TestPendingChangeIsConfirmedByID(t *testing.T) {
+	e := serve(t, configTOML)
+	c := mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "osaka", Confirm: "30s"})
+	if c.State != daemon.Pending || c.Deadline == nil {
+		t.Fatalf("change = %+v, want pending with a deadline", c)
+	}
+	got, err := e.client.Confirm(ctx, c.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tun.running != "osaka" || st.Pending == nil || st.Pending.RevertsTo != "down" {
-		t.Errorf("running %q, pending %+v; want osaka pending, reverting to down", tun.running, st.Pending)
+	if got.State != daemon.Committed {
+		t.Errorf("after confirm state %s, want committed", got.State)
 	}
-	if _, err := c.Confirm(context.Background()); err != nil {
-		t.Fatal(err)
+	listed, err := e.client.Changes(ctx)
+	if err != nil || len(listed) != 1 || listed[0].ID != c.ID {
+		t.Errorf("changes = %+v, %v; want just %s", listed, err, c.ID)
+	}
+}
+
+func TestDryRunReturnsThePlan(t *testing.T) {
+	e := serve(t, configTOML)
+	c := mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "tokyo", DryRun: true})
+	if c.State != daemon.Planned || c.Diff.Node == nil || c.Diff.Node.To != "tokyo" || e.tun.running != "" {
+		t.Errorf("change %+v, running %q; want a plan to bring up tokyo and nothing running", c, e.tun.running)
 	}
 }
 
 func TestErrorsCarryACodeAndAHint(t *testing.T) {
-	c, _, _ := serve(t, configTOML)
-	_, err := c.Up(context.Background(), api.ChangeRequest{Node: "nowhere"})
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != "node_not_found" || apiErr.Hint == "" {
-		t.Fatalf("err = %#v, want code node_not_found with a hint", err)
+	e := serve(t, configTOML)
+	cases := []struct {
+		req  api.ChangeRequest
+		code string
+	}{
+		{api.ChangeRequest{Action: "connect", Node: "nowhere"}, "node_not_found"},
+		{api.ChangeRequest{Action: "connect"}, "no_node"},
+		{api.ChangeRequest{Action: "apply"}, "tunnel_down"},
+		{api.ChangeRequest{Action: "teleport"}, "bad_request"},
+		{api.ChangeRequest{Action: "connect", Node: "tokyo", Confirm: "soon"}, "bad_request"},
+	}
+	for _, tc := range cases {
+		_, err := e.client.CreateChange(ctx, tc.req)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != tc.code {
+			t.Errorf("%+v: err = %v, want code %s", tc.req, err, tc.code)
+		}
 	}
 
-	if _, err := c.Up(context.Background(), api.ChangeRequest{Node: "tokyo", Confirm: "30s"}); err != nil {
+	pending := mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "tokyo", Confirm: "30s"})
+	_, err := e.client.CreateChange(ctx, api.ChangeRequest{Action: "connect", Node: "osaka"})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "change_pending" || apiErr.Hint == "" {
+		t.Errorf("err = %v, want change_pending with a hint", err)
+	}
+	if _, err := e.client.Revert(ctx, pending.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Up(context.Background(), api.ChangeRequest{Node: "osaka"})
-	if !errors.As(err, &apiErr) || apiErr.Code != "change_pending" {
-		t.Fatalf("err = %#v, want code change_pending", err)
+	_, err = e.client.Confirm(ctx, pending.ID)
+	if !errors.As(err, &apiErr) || apiErr.Code != "not_pending" {
+		t.Errorf("err = %v, want not_pending", err)
 	}
 }
 
 func TestInvalidConfigIsRefusedWithEveryProblem(t *testing.T) {
-	c, tun, _ := serve(t, "active = \"tokyo\"\ndefault = \"sideways\"\n")
-	_, err := c.Up(context.Background(), api.ChangeRequest{})
+	e := serve(t, configTOML+"\n[[rule]]\naction = \"sideways\"\n\n[[rule]]\naction = \"direct\"\n")
+	_, err := e.client.CreateChange(ctx, api.ChangeRequest{Action: "connect", Node: "tokyo"})
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != "config_invalid" || len(apiErr.Problems) != 2 {
-		t.Fatalf("err = %#v, want config_invalid with 2 problems", err)
+		t.Fatalf("err = %v, want config_invalid with 2 problems", err)
 	}
-	if tun.running != "" {
+	if e.tun.running != "" {
 		t.Errorf("tunnel started with an invalid config")
 	}
 }
 
 // After a reboot the daemon brings back what was last committed.
 func TestCommittedStateSurvivesARestart(t *testing.T) {
-	c, _, dir := serve(t, configTOML)
-	if _, err := c.Up(context.Background(), api.ChangeRequest{Node: "osaka"}); err != nil {
+	e := serve(t, configTOML)
+	mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "osaka"})
+	restarted := env{tun: &fakeTunnel{}, dir: e.dir, sock: e.sock + "2"}
+	start(t, restarted)
+	if restarted.tun.running != "osaka" {
+		t.Errorf("after restart running %q, want osaka", restarted.tun.running)
+	}
+}
+
+func TestEventsSinceACursor(t *testing.T) {
+	e := serve(t, configTOML)
+	mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "tokyo"})
+	events, err := e.client.Events(ctx, 0)
+	if err != nil || len(events) != 1 || events[0].Kind != "change.committed" {
+		t.Fatalf("events = %+v, %v; want one change.committed", events, err)
+	}
+	later, err := e.client.Events(ctx, events[0].Seq)
+	if err != nil || len(later) != 0 {
+		t.Errorf("events after the cursor = %+v, %v; want none", later, err)
+	}
+}
+
+func mustChange(t *testing.T, c *api.Client, r api.ChangeRequest) daemon.Change {
+	t.Helper()
+	ch, err := c.CreateChange(ctx, r)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tun := &fakeTunnel{}
-	srv := &api.Server{
-		Daemon:    daemon.New(tun, realClock{}, okProbe{}),
-		ConfigDir: dir,
-		StatePath: filepath.Join(dir, "state.json"),
-	}
-	if err := srv.Resume(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if tun.running != "osaka" {
-		t.Errorf("after resume running %q, want osaka", tun.running)
-	}
+	return ch
 }
