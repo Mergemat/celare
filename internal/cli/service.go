@@ -40,11 +40,11 @@ var daemonBinary = filepath.Join(supportDir, "bin", "celare")
 func (a *app) serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Install, remove or inspect the background daemon (install/uninstall need sudo)",
+		Short: "Install, remove or inspect the background daemon",
 		Long: `The daemon runs as root under launchd because creating the tunnel interface
 and changing routes and DNS need it. It listens on /var/run/celare.sock,
 which only the user who installed it can open, so celare itself never
-needs sudo after 'sudo celare service install'.`,
+needs your password again after 'celare service install'.`,
 	}
 	cmd.AddCommand(a.serviceInstallCmd(), a.serviceUninstallCmd(), a.serviceStatusCmd(), a.serviceRunCmd())
 	return cmd
@@ -55,6 +55,60 @@ func requireRoot(command string) error {
 		return failure("needs_root", command+" changes system files and needs root", "run `sudo "+command+"`")
 	}
 	return nil
+}
+
+// exitCode ends Run with a code after the output was already printed,
+// e.g. by an escalated copy of this command.
+type exitCode int
+
+func (e exitCode) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+
+// escalate re-runs this command as root. In a terminal that is sudo, which
+// prompts there; without one (an agent, the app) it is the macOS admin
+// dialog, so a person still approves it.
+func (a *app) escalate(args ...string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if a.json {
+		args = append(args, "--json")
+	}
+	if stdinIsTerminal() {
+		cmd := exec.Command("sudo", append([]string{self}, args...)...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, a.env.Stdout, a.env.Stderr
+		if err := cmd.Run(); err != nil {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				return exitCode(exit.ExitCode())
+			}
+			return err
+		}
+		return exitCode(0)
+	}
+	line := shellQuote(self)
+	for _, arg := range args {
+		line += " " + shellQuote(arg)
+	}
+	script := `do shell script "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(line) + `" with administrator privileges`
+	out, err := exec.Command("osascript", "-e", script).Output()
+	a.env.Stdout.Write(out)
+	if err != nil {
+		if len(out) == 0 {
+			return failure("not_authorized", "the administrator password prompt was cancelled or failed", "run it again and approve the prompt")
+		}
+		return exitCode(exitError)
+	}
+	return exitCode(0)
+}
+
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // invokingUser is the user the daemon serves: --uid when given (the app
@@ -108,9 +162,12 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 	var uid int
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install and start the daemon (sudo)",
+		Short: "Install and start the daemon (asks for your password)",
 		Args:  exactArgs(0, "no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if uid < 0 && os.Geteuid() != 0 {
+				uid = os.Getuid() // escalating below: install for whoever runs this
+			}
 			u, err := invokingUser(uid)
 			if err != nil {
 				return err
@@ -123,8 +180,8 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 					fmt.Fprintf(w, "would install %s and %s for %s:\n\n%s", daemonBinary, plistPath, u.Username, p)
 				})
 			}
-			if err := requireRoot("celare service install"); err != nil {
-				return err
+			if os.Geteuid() != 0 {
+				return a.escalate("service", "install", "--uid", u.Uid)
 			}
 			self, err := os.Executable()
 			if err != nil {
@@ -165,6 +222,10 @@ func linkCLI(self string) bool {
 	fromApp := strings.Contains(self, ".app/Contents/Resources/")
 	fromBrew := strings.Contains(self, "/Cellar/") || strings.HasPrefix(self, "/opt/homebrew/")
 	if !fromApp || fromBrew {
+		return false
+	}
+	// The Homebrew cask already links celare on Apple Silicon.
+	if _, err := os.Lstat("/opt/homebrew/bin/celare"); err == nil {
 		return false
 	}
 	if target, err := os.Readlink(cliLink); err == nil && target != daemonBinary {
@@ -212,11 +273,11 @@ func waitForSocket(path string, within time.Duration) error {
 func (a *app) serviceUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
-		Short: "Stop and remove the daemon, restoring routes and DNS (sudo)",
+		Short: "Stop and remove the daemon, restoring routes and DNS (asks for your password)",
 		Args:  exactArgs(0, "no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := requireRoot("celare service uninstall"); err != nil {
-				return err
+			if os.Geteuid() != 0 {
+				return a.escalate("service", "uninstall")
 			}
 			// Stopping the daemon takes the tunnel down cleanly.
 			exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
@@ -276,7 +337,7 @@ func (a *app) serviceStatusCmd() *cobra.Command {
 			st := a.serviceStatus(cmd.Context())
 			var next []string
 			if !st.Installed {
-				next = []string{"sudo celare service install"}
+				next = []string{"celare service install"}
 			}
 			return a.ok(st, func(w io.Writer) {
 				fmt.Fprintf(w, "installed: %v  running: %v  reachable: %v\nlog: %s\n", st.Installed, st.Running, st.Reachable, st.Log)

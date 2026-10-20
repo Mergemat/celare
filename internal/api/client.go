@@ -94,7 +94,7 @@ func (c *Client) call(ctx context.Context, method, path string, body, out any) e
 		return &Error{
 			Code:    "daemon_unreachable",
 			Message: fmt.Sprintf("cannot reach the celare daemon at %s: %v", c.socket, err),
-			Hint:    "run `sudo celare service install` once, or `celare doctor` to see what is wrong",
+			Hint:    "run `celare service install` once, or `celare doctor` to see what is wrong",
 		}
 	}
 	defer resp.Body.Close()

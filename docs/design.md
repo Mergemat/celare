@@ -45,7 +45,7 @@ celare subs  list | add <name> <url> | update [name...] | remove <name>
 celare rules list | add <action> <match>... [--name N] [--first] | remove <name|position> | explain <target> | geo-update
 celare config init | check | path | render [node]
 
-celare service install [--uid U] | uninstall | status   (install/uninstall need sudo; --uid is for the app's admin prompt)
+celare service install [--uid U] | uninstall | status   (install/uninstall ask for your password themselves)
 celare doctor                                     every check, with the fix for each failure
 celare skill                                      SKILL.md for agents
 ```

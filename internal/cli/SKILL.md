@@ -33,6 +33,6 @@ Your own connection probably runs through this tunnel. A bad change can cut you 
 
 ## Exit codes
 
-`0` ok · `1` error · `2` usage · `3` daemon unreachable (`sudo celare service install` once; that one needs a human) · `4` a change is pending (confirm or revert it first) · `5` reverted (the probe failed; the previous tunnel is back).
+`0` ok · `1` error · `2` usage · `3` daemon unreachable (`celare service install`; it shows the user a password dialog to approve) · `4` a change is pending (confirm or revert it first) · `5` reverted (the probe failed; the previous tunnel is back).
 
 Credentials are redacted unless you pass `--reveal`. Leave them redacted unless the user asks to see them.

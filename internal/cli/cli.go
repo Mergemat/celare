@@ -54,6 +54,10 @@ func Run(ctx context.Context, args []string, env Env) int {
 	root.SetOut(env.Stdout)
 	root.SetErr(env.Stderr)
 	if err := root.ExecuteContext(ctx); err != nil {
+		var code exitCode
+		if errors.As(err, &code) {
+			return int(code)
+		}
 		if strings.HasPrefix(err.Error(), "unknown command") || strings.HasPrefix(err.Error(), "unknown flag") ||
 			strings.HasPrefix(err.Error(), "unknown shorthand") {
 			err = usageError{err}

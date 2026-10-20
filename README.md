@@ -11,19 +11,13 @@ A macOS VPN client for every protocol [3x-ui](https://github.com/MHSanaei/3x-ui)
 
 ## Install
 
-**Homebrew**, for the app and the CLI together:
-
 ```sh
-brew install mergemat/tap/celare
-sudo celare service install        # once, and again after each upgrade
-open "$(brew --prefix)/opt/celare/Celare.app"
+brew install --cask mergemat/tap/celare
 ```
 
-**Download**: get `Celare-<version>.zip` from [Releases](https://github.com/Mergemat/celare/releases) and move `Celare.app` to Applications. The app isn't notarized, so the first launch is blocked: open System Settings → Privacy & Security and click **Open Anyway**. The app then offers to install the background service, and doing so also puts `celare` on your PATH.
+That puts Celare in Applications and `celare` on your PATH, and installs the background service, which asks for your password once. Open Celare from Spotlight. Upgrades with `brew upgrade` keep the service current.
 
-**CLI only**: `celare-<version>-darwin.tar.gz` from Releases, or `go install github.com/Mergemat/celare/cmd/celare@latest`. Then `sudo celare service install`.
-
-The background service runs as root because it creates the tunnel interface and changes routes and DNS. After it is installed, nothing else needs sudo.
+Without Homebrew, download `Celare-<version>.zip` from [Releases](https://github.com/Mergemat/celare/releases) and drag `Celare.app` to Applications. It isn't notarized, so approve the first launch in System Settings → Privacy & Security → **Open Anyway**. The app then sets up the service and the `celare` command.
 
 ## Use
 

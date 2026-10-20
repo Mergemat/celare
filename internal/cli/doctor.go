@@ -65,11 +65,11 @@ func (a *app) doctorCmd() *cobra.Command {
 			tunnel, tunnelErr := a.client().Tunnel(cmd.Context())
 			switch {
 			case !svc.Installed:
-				add("daemon", "fail", "not installed", "run `sudo celare service install`")
+				add("daemon", "fail", "not installed", "run `celare service install`")
 			case tunnelErr != nil:
-				add("daemon", "fail", "installed but not answering on "+a.env.Socket, "see "+svc.Log+", then `sudo celare service install` to restart it")
+				add("daemon", "fail", "installed but not answering on "+a.env.Socket, "see "+svc.Log+", then `celare service install` to restart it")
 			case tunnel.Version != Version:
-				add("daemon", "warn", fmt.Sprintf("daemon is %s, this CLI is %s", tunnel.Version, Version), "run `sudo celare service install` to update it")
+				add("daemon", "warn", fmt.Sprintf("daemon is %s, this CLI is %s", tunnel.Version, Version), "run `celare service install` to update it")
 			default:
 				add("daemon", "ok", fmt.Sprintf("%s, running (pid %d)", tunnel.Version, svc.PID), "")
 			}
