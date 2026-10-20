@@ -71,3 +71,7 @@ make release    # the release zip, CLI tarball and checksums, as CI builds them
 Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and, if the `HOMEBREW_TAP_TOKEN` secret is set, updates the formula in `Mergemat/homebrew-tap`.
 
 With the tunnel up, `celare doctor` checks that it carries traffic and shows the exit IP.
+
+## License
+
+MIT. celare links [xray-core](https://github.com/XTLS/Xray-core), which is MPL-2.0.

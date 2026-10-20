@@ -7,6 +7,7 @@ class Celare < Formula
   url "https://github.com/Mergemat/celare/releases/download/v@VERSION@/Celare-@VERSION@.zip"
   version "@VERSION@"
   sha256 "@SHA256@"
+  license "MIT"
 
   depends_on :macos
 
