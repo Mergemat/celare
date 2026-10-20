@@ -10,6 +10,7 @@ struct Change: Decodable, Sendable, Identifiable, Hashable {
     let state: String
     let from: Endpoint?
     let to: Endpoint?
+    let createdAt: Date?
     let deadline: Date?
     let reason: String?
 }

@@ -17,7 +17,8 @@ enum Snapshot {
         }
         let dark = args.contains("--dark")
         let view = MenuView(model: model, live: false)
-            .background(Color(nsColor: .windowBackgroundColor))
+            // Stands in for the popover's frosted material.
+            .background(dark ? Color(white: 0.16) : Color(white: 0.93))
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
@@ -52,7 +53,7 @@ enum Snapshot {
             model.nodes = nodes
         case "pending":
             model.tunnel = tunnel(up: true, pending: Change(id: "c1a2b3", action: "connect", state: "pending",
-                from: Endpoint(node: "main/Osaka"), to: Endpoint(node: "main/Tokyo"), deadline: Date().addingTimeInterval(24), reason: nil))
+                from: Endpoint(node: "main/Osaka"), to: Endpoint(node: "main/Tokyo"), createdAt: Date().addingTimeInterval(-36), deadline: Date().addingTimeInterval(24), reason: nil))
             model.nodes = nodes
         default:
             model.tunnel = tunnel(up: true)

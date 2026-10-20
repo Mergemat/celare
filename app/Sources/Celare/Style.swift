@@ -1,104 +1,112 @@
 import AppKit
 import SwiftUI
 
-/// Deep blue is the primary color. Everything interactive is convex: a
-/// faint top-lit gradient, a hairline border and a tight shadow, pressing
-/// in when held. Surfaces that only show information stay flat, so shape
-/// alone tells you what can be clicked.
+/// The design has one loud thing: the deep-blue convex bar that carries
+/// the main action. Everything else is quiet. Secondary controls sit flat
+/// and rise convex under the pointer, so what's clickable still reveals
+/// itself by shape.
 enum Palette {
-    static let blueTop = Color(red: 0.22, green: 0.38, blue: 0.80)
-    static let blueBottom = Color(red: 0.09, green: 0.21, blue: 0.56)
-    static let blue = Color(red: 0.13, green: 0.29, blue: 0.70)
+    static let blueTop = Color(red: 0.25, green: 0.42, blue: 0.86)
+    static let blueBottom = Color(red: 0.09, green: 0.20, blue: 0.55)
+    static let blueDot = Color(red: 0.30, green: 0.50, blue: 0.95)
 
-    static let neutralTop = adaptive(light: (1.00, 1.00, 1.00), dark: (0.27, 0.28, 0.31))
-    static let neutralBottom = adaptive(light: (0.91, 0.92, 0.94), dark: (0.19, 0.20, 0.22))
+    static let raisedTop = adaptive(light: (1.00, 1.00, 1.00, 0.95), dark: (1, 1, 1, 0.13))
+    static let raisedBottom = adaptive(light: (0.93, 0.94, 0.96, 0.95), dark: (1, 1, 1, 0.05))
 
-    private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
+    private static func adaptive(light: (CGFloat, CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat, CGFloat)) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let c = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
-            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: c.3)
         })
     }
 }
 
-struct Convex: ViewModifier {
-    var prominent: Bool
+/// A convex surface: top-lit gradient, hairline border, inner highlight
+/// along the top edge, tight shadow.
+struct ConvexSurface: View {
+    var blue: Bool
     var pressed: Bool
     var radius: CGFloat
 
-    func body(content: Content) -> some View {
-        let top = prominent ? Palette.blueTop : Palette.neutralTop
-        let bottom = prominent ? Palette.blueBottom : Palette.neutralBottom
+    var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        content
-            .foregroundStyle(prominent ? Color.white : Color.primary)
-            .background(shape.fill(LinearGradient(colors: pressed ? [bottom, top] : [top, bottom], startPoint: .top, endPoint: .bottom)))
+        let top = blue ? Palette.blueTop : Palette.raisedTop
+        let bottom = blue ? Palette.blueBottom : Palette.raisedBottom
+        shape
+            .fill(LinearGradient(colors: pressed ? [bottom, top] : [top, bottom], startPoint: .top, endPoint: .bottom))
             .overlay(
-                shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(prominent ? 0.30 : 0.55), .black.opacity(prominent ? 0.25 : 0.14)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 0.75
-                )
+                // The lit top edge that makes it read as raised.
+                shape.inset(by: 0.75).stroke(
+                    LinearGradient(colors: [.white.opacity(blue ? 0.35 : 0.5), .clear], startPoint: .top, endPoint: .center),
+                    lineWidth: 0.75)
             )
-            .shadow(color: .black.opacity(pressed ? 0 : 0.14), radius: 1, y: pressed ? 0 : 0.75)
-            .animation(.easeOut(duration: 0.08), value: pressed)
+            .overlay(shape.stroke(Color.black.opacity(blue ? 0.35 : 0.12), lineWidth: 0.5))
+            .shadow(color: .black.opacity(pressed ? 0.05 : 0.22), radius: pressed ? 0.5 : 1.5, y: pressed ? 0 : 1)
     }
 }
 
-struct ConvexButtonStyle: ButtonStyle {
-    var prominent = false
-    var fullWidth = false
+/// The main action. Always raised, always deep blue.
+struct PrimaryBarStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .frame(maxWidth: fullWidth ? .infinity : nil)
-            .modifier(Convex(prominent: prominent, pressed: configuration.isPressed, radius: 6))
-            .opacity(isEnabled ? 1 : 0.45)
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 30)
+            .background(ConvexSurface(blue: true, pressed: configuration.isPressed, radius: 8))
+            .opacity(isEnabled ? 1 : 0.5)
             .contentShape(Rectangle())
     }
 }
 
-/// A small square button holding an SF Symbol.
-struct IconButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
+/// A secondary button that is always raised (Revert, next to Keep).
+struct RaisedButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: .semibold))
-            .frame(width: 26, height: 22)
-            .modifier(Convex(prominent: false, pressed: configuration.isPressed, radius: 6))
-            .opacity(isEnabled ? 1 : 0.45)
+            .font(.system(size: 12.5, weight: .medium))
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(ConvexSurface(blue: false, pressed: configuration.isPressed, radius: 8))
             .contentShape(Rectangle())
     }
 }
 
-/// Rows in the node list: full width, blue when active.
-struct ConvexRowStyle: ButtonStyle {
-    var active: Bool
+/// Flat at rest, convex under the pointer: rows and footer actions.
+struct HoverRaiseStyle: ButtonStyle {
+    var radius: CGFloat = 6
+    var horizontal: CGFloat = 8
+    var vertical: CGFloat = 5
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(Convex(prominent: active, pressed: configuration.isPressed, radius: 7))
-            .contentShape(Rectangle())
+        HoverRaise(configuration: configuration, radius: radius, horizontal: horizontal, vertical: vertical)
+    }
+
+    private struct HoverRaise: View {
+        let configuration: Configuration
+        let radius: CGFloat
+        let horizontal: CGFloat
+        let vertical: CGFloat
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .padding(.horizontal, horizontal)
+                .padding(.vertical, vertical)
+                .background(
+                    ConvexSurface(blue: false, pressed: configuration.isPressed, radius: radius)
+                        .opacity(hovering || configuration.isPressed ? 1 : 0)
+                )
+                .opacity(isEnabled ? 1 : 0.45)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 && isEnabled }
+                .animation(.easeOut(duration: 0.1), value: hovering)
+        }
     }
 }
 
-struct PowerButtonStyle: ButtonStyle {
-    var on: Bool
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 14, weight: .semibold))
-            .frame(width: 34, height: 34)
-            .modifier(Convex(prominent: on, pressed: configuration.isPressed, radius: 17))
-            .opacity(isEnabled ? 1 : 0.45)
-    }
+extension Font {
+    static let mono = Font.system(size: 10.5, weight: .regular, design: .monospaced)
 }
