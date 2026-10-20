@@ -68,7 +68,7 @@ make run        # build dist/Celare.app and open it
 make release    # the release zip, CLI tarball and checksums, as CI builds them
 ```
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and, if the `HOMEBREW_TAP_TOKEN` secret is set, updates the formula in `Mergemat/homebrew-tap`.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and, updates the formula in `Mergemat/homebrew-tap` using the `HOMEBREW_TAP_DEPLOY_KEY` secret.
 
 With the tunnel up, `celare doctor` checks that it carries traffic and shows the exit IP.
 

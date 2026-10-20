@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// The app drives the bundled `celare` binary with `--json`, exactly as an
@@ -6,6 +7,9 @@ struct CLI: Sendable {
     let binary: URL
 
     static func locate() -> CLI {
+        if let path = ProcessInfo.processInfo.environment["CELARE_CLI"] {
+            return CLI(binary: URL(fileURLWithPath: path))
+        }
         if let bundled = Bundle.main.url(forResource: "celare", withExtension: nil) {
             return CLI(binary: bundled)
         }
@@ -15,37 +19,46 @@ struct CLI: Sendable {
         return CLI(binary: URL(fileURLWithPath: "/usr/local/bin/celare"))
     }
 
-    struct Failure: Error, Decodable, Sendable {
+    struct Failure: Error, Decodable, Sendable, Equatable {
         let code: String
         let message: String
         let hint: String?
     }
 
     private struct Envelope<T: Decodable>: Decodable {
-        let ok: Bool
         let data: T?
         let error: Failure?
     }
 
     func run<T: Decodable & Sendable>(_ args: [String], as: T.Type = T.self) async throws -> T {
-        let binary = self.binary
-        return try await Task.detached {
-            let process = Process()
-            process.executableURL = binary
-            process.arguments = args + ["--json"]
-            let out = Pipe()
-            process.standardOutput = out
-            process.standardError = FileHandle.nullDevice
+        try await Task.detached { try runSync(args, as: T.self) }.value
+    }
+
+    func runSync<T: Decodable>(_ args: [String], as: T.Type = T.self) throws -> T {
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = args + ["--json"]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        do {
             try process.run()
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            let envelope = try JSONDecoder.celare.decode(Envelope<T>.self, from: data)
-            if let error = envelope.error { throw error }
-            guard let value = envelope.data else {
-                throw Failure(code: "empty", message: "celare returned no data", hint: nil)
-            }
-            return value
-        }.value
+        } catch {
+            throw Failure(code: "cli_missing", message: "Can't run \(binary.path)", hint: "Reinstall Celare.")
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let envelope: Envelope<T>
+        do {
+            envelope = try JSONDecoder.celare.decode(Envelope<T>.self, from: data)
+        } catch {
+            throw Failure(code: "bad_output", message: "celare \(args.first ?? "") returned something unexpected", hint: nil)
+        }
+        if let error = envelope.error { throw error }
+        guard let value = envelope.data else {
+            throw Failure(code: "empty", message: "celare returned no data", hint: nil)
+        }
+        return value
     }
 
     /// Runs `celare service install` as root through the system's admin
@@ -57,7 +70,8 @@ struct CLI: Sendable {
             var error: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&error)
             if let error {
-                throw Failure(code: "install_failed", message: error[NSAppleScript.errorMessage] as? String ?? "install failed", hint: nil)
+                let message = error[NSAppleScript.errorMessage] as? String ?? "Install failed"
+                throw Failure(code: "install_failed", message: message, hint: nil)
             }
         }.value
     }

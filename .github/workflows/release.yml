@@ -2,7 +2,8 @@ name: release
 
 # Push a tag like v0.1.0 to publish Celare-0.1.0.zip (the app, CLI inside),
 # celare-0.1.0-darwin.tar.gz (CLI only) and checksums.txt, then update the
-# Homebrew formula in Mergemat/homebrew-tap when HOMEBREW_TAP_TOKEN is set.
+# Homebrew formula in Mergemat/homebrew-tap. HOMEBREW_TAP_DEPLOY_KEY is the
+# private half of a deploy key that can write to that one repository.
 on:
   push:
     tags: ["v*"]
@@ -38,12 +39,16 @@ jobs:
 
       - name: Update the Homebrew formula
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        if: env.TAP_TOKEN != ''
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        if: env.DEPLOY_KEY != ''
         run: |
           v="${GITHUB_REF_NAME#v}"
           sha=$(shasum -a 256 "dist/Celare-$v.zip" | cut -d' ' -f1)
-          git clone "https://x-access-token:$TAP_TOKEN@github.com/Mergemat/homebrew-tap.git" tap
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone git@github.com:Mergemat/homebrew-tap.git tap
           mkdir -p tap/Formula
           sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$sha/g" packaging/homebrew/celare.rb > tap/Formula/celare.rb
           cd tap

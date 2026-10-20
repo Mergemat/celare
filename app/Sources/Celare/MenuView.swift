@@ -4,90 +4,119 @@ struct MenuView: View {
     @Bindable var model: AppModel
     /// False for snapshots: don't start polling the daemon.
     var live = true
+    @State private var adding = false
+    @State private var input = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            if let pending = model.tunnel?.pending {
-                PendingBanner(change: pending, model: model)
-            }
-            if let foreign = model.tunnel?.system?.foreignTunnels, !foreign.isEmpty {
-                Text("Another VPN holds the default route (\(foreign.joined(separator: ", "))). Turn it off.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            if model.serviceOutdated {
-                HStack {
-                    Text("The background service is an older version.").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Update") { Task { await model.installService() } }
-                        .buttonStyle(ConvexButtonStyle(prominent: true))
-                }
-            }
-            if model.daemonMissing {
-                installPrompt
-            } else {
-                nodeList
-            }
+            content
             if let error = model.error {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(error.message).font(.caption).foregroundStyle(.red)
-                    if let hint = error.hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }
-                }
-                .textSelection(.enabled)
+                ErrorNote(failure: error) { model.error = nil }
             }
             Divider()
             footer
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(12)
+        .frame(width: 300)
         .onAppear { if live { model.start() } }
     }
 
+    // MARK: header
+
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button {
                 Task { model.tunnel?.isUp == true ? await model.disconnect() : await model.connect(nil) }
             } label: {
                 Image(systemName: "power")
             }
             .buttonStyle(PowerButtonStyle(on: model.tunnel?.isUp == true))
-            .disabled(model.daemonMissing || model.busy != nil)
+            .disabled(model.phase != .ready || model.busy != nil)
+            .help(model.tunnel?.isUp == true ? "Disconnect" : "Connect to the last node")
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
     }
 
     private var title: String {
         if let busy = model.busy { return busy }
-        guard let tunnel = model.tunnel else { return model.daemonMissing ? "Not installed" : "celare" }
-        return tunnel.isUp ? (tunnel.node ?? "Connected") : "Disconnected"
+        switch model.phase {
+        case .loading: return "celare"
+        case .needsService: return "Set up celare"
+        case .needsNodes: return "Add a node"
+        case .broken: return "Something's wrong"
+        case .ready:
+            guard let t = model.tunnel, t.isUp else { return "Not connected" }
+            return t.node ?? "Connected"
+        }
     }
 
     private var subtitle: String {
-        guard let tunnel = model.tunnel else { return "" }
-        let since = tunnel.since.formatted(date: .omitted, time: .shortened)
-        if tunnel.isUp, let iface = tunnel.system?.interface {
-            return "since \(since) · via \(iface)"
+        switch model.phase {
+        case .loading: return "Checking…"
+        case .needsService: return "Install the background service once"
+        case .needsNodes: return "Paste a subscription URL or a share link"
+        case .broken(let f): return f.message
+        case .ready:
+            guard let t = model.tunnel, t.isUp else { return "Pick a node" }
+            var parts = ["Connected since \(t.since.formatted(date: .omitted, time: .shortened))"]
+            if let iface = t.system?.interface { parts.append("via \(iface)") }
+            return parts.joined(separator: " · ")
         }
-        return "since \(since)"
     }
 
-    private var nodeList: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("NODES").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            if model.nodes.isEmpty {
-                Text("No nodes yet. Add one with `celare nodes add` or a subscription with `celare subs add`.")
-                    .font(.caption)
+    // MARK: content
+
+    @ViewBuilder
+    private var content: some View {
+        switch model.phase {
+        case .loading:
+            EmptyView()
+        case .needsService:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("It creates the tunnel and sets routes and DNS, which takes your password the first time.")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Install") { Task { await model.installService() } }
+                    .buttonStyle(ConvexButtonStyle(prominent: true, fullWidth: true))
+                    .disabled(model.busy != nil)
             }
-            if model.nodes.count > 6 {
-                ScrollView { rows.padding(.vertical, 2) }
-                    .frame(maxHeight: 260)
+        case .needsNodes:
+            addField
+        case .broken(let f):
+            if let hint = f.hint {
+                Text(hint).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        case .ready:
+            ready
+        }
+    }
+
+    @ViewBuilder
+    private var ready: some View {
+        if let pending = model.tunnel?.pending {
+            PendingBanner(change: pending, model: model)
+        }
+        if model.serviceOutdated {
+            Notice(text: "The background service is older than the app.", action: "Update") {
+                Task { await model.installService() }
+            }
+        }
+        if let foreign = model.tunnel?.system?.foreignTunnels, !foreign.isEmpty {
+            Text("Another VPN is active (\(foreign.joined(separator: ", "))). Turn it off to connect.")
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+        }
+        if adding { addField }
+        VStack(spacing: 5) {
+            if model.nodes.count > 7 {
+                ScrollView { rows.padding(.vertical, 1) }.frame(maxHeight: 250)
             } else {
                 rows
             }
@@ -95,9 +124,10 @@ struct MenuView: View {
     }
 
     private var rows: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 5) {
             ForEach(model.nodes) { node in
-                NodeRow(node: node, active: model.tunnel?.isUp == true && model.tunnel?.node == node.name,
+                NodeRow(node: node,
+                        active: model.tunnel?.isUp == true && model.tunnel?.node == node.name,
                         result: model.latency[node.name]) {
                     Task { await model.connect(node.name) }
                 }
@@ -106,25 +136,61 @@ struct MenuView: View {
         }
     }
 
-    private var installPrompt: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("The background service isn't installed. It needs your password once, to create the tunnel and set routes and DNS.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Install background service") { Task { await model.installService() } }
+    private var addField: some View {
+        HStack(spacing: 6) {
+            TextField("https://… or vless://…", text: $input)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator, lineWidth: 0.75))
+                .onSubmit(submit)
+            Button("Add", action: submit)
                 .buttonStyle(ConvexButtonStyle(prominent: true))
+                .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || model.busy != nil)
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 6) {
-            Button("Test") { Task { await model.testNodes() } }
-            Button("Update") { Task { await model.updateSubscriptions() } }
-            Button("Config") { Task { await model.openConfig() } }
-            Spacer()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+    private func submit() {
+        let text = input
+        Task {
+            if await model.add(text) {
+                input = ""
+                adding = false
+            }
         }
-        .buttonStyle(ConvexButtonStyle())
+    }
+
+    // MARK: footer
+
+    private var footer: some View {
+        HStack(spacing: 5) {
+            if model.phase == .ready {
+                Button { adding.toggle() } label: { Image(systemName: "plus") }
+                    .help("Add a subscription or a node")
+                Button { Task { await model.updateSubscriptions() } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Update subscriptions")
+                Button { Task { await model.testNodes() } } label: { Image(systemName: "gauge.with.needle") }
+                    .help("Measure every node")
+            }
+            Spacer()
+            Menu {
+                Button("Open config.toml") { Task { await model.openConfig() } }
+                Button("Copy CLI path") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
+                }
+                Divider()
+                Button("Quit celare") { NSApplication.shared.terminate(nil) }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .buttonStyle(IconButtonStyle())
         .disabled(model.busy != nil)
     }
 }
@@ -137,18 +203,18 @@ struct NodeRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(node.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
                     Text([node.protocol, node.transport, node.security].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption2)
-                        .opacity(0.7)
+                        .font(.system(size: 10))
+                        .opacity(0.65)
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 if let result {
                     Text(result.ok ? "\(result.latencyMs ?? 0) ms" : "failed")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(result.ok ? AnyShapeStyle(.primary.opacity(0.8)) : AnyShapeStyle(Color.red.opacity(0.85)))
+                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .foregroundStyle(result.ok || active ? AnyShapeStyle(.primary.opacity(0.75)) : AnyShapeStyle(Color.red))
                 }
             }
         }
@@ -162,20 +228,58 @@ struct PendingBanner: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Change \(change.id) pending").font(.caption.weight(.semibold))
+                    Text("Keep this change?").font(.system(size: 11, weight: .semibold))
                     if let deadline = change.deadline {
                         let left = max(0, Int(deadline.timeIntervalSince(context.date)))
-                        Text("reverts to \(change.from?.node ?? "down") in \(left)s").font(.caption2).foregroundStyle(.secondary)
+                        Text("Back to \(change.from?.node ?? "disconnected") in \(left)s")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 Button("Revert") { Task { await model.revert(change.id) } }
                     .buttonStyle(ConvexButtonStyle())
                 Button("Keep") { Task { await model.confirm(change.id) } }
                     .buttonStyle(ConvexButtonStyle(prominent: true))
             }
+        }
+    }
+}
+
+struct Notice: View {
+    let text: String
+    let action: String
+    let perform: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button(action, action: perform).buttonStyle(ConvexButtonStyle(prominent: true))
+        }
+    }
+}
+
+struct ErrorNote: View {
+    let failure: CLI.Failure
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(failure.message).font(.system(size: 11)).foregroundStyle(.red)
+                if let hint = failure.hint {
+                    Text(hint).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
         }
     }
 }
