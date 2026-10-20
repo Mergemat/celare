@@ -76,6 +76,14 @@ type Status struct {
 
 const maxEvents = 20
 
+// Errors callers can branch on.
+var (
+	ErrPending        = errors.New("a change is waiting for confirmation")
+	ErrNothingPending = errors.New("no change is pending")
+	ErrProbeFailed    = errors.New("probe failed")
+	ErrStartFailed    = errors.New("tunnel failed to start")
+)
+
 type Daemon struct {
 	tunnel Tunnel
 	clock  Clock
@@ -85,6 +93,10 @@ type Daemon struct {
 	// Status stays responsive while a transition (or probe) runs.
 	op sync.Mutex
 	mu sync.Mutex
+
+	// OnSettled, if set, is called with the running spec whenever no
+	// change is left pending, i.e. whenever the state is committed.
+	OnSettled func(*Spec)
 
 	current *Spec
 	since   time.Time
@@ -119,8 +131,8 @@ func (d *Daemon) Apply(ctx context.Context, c Change) error {
 	pending, previous := d.pending, d.current
 	d.mu.Unlock()
 	if pending != nil {
-		return fmt.Errorf("a change is waiting for confirmation until %s; run `celare confirm` to keep it or `celare rollback` to undo it first",
-			pending.Deadline.Format(time.RFC3339))
+		return fmt.Errorf("%w until %s; run `celare confirm` to keep it or `celare rollback` to undo it first",
+			ErrPending, pending.Deadline.Format(time.RFC3339))
 	}
 
 	if err := d.switchTo(previous, c.Spec); err != nil {
@@ -132,9 +144,10 @@ func (d *Daemon) Apply(ctx context.Context, c Change) error {
 		cancel()
 		if err != nil {
 			restoreErr := d.switchTo(c.Spec, previous)
-			msg := fmt.Sprintf("probe of %s through %s failed (%v); rolled back to %s", c.Probe, describe(c.Spec), err, describe(previous))
-			d.record(msg)
-			return errors.Join(errors.New(msg), restoreErr)
+			msg := fmt.Sprintf("%s through %s: %v; rolled back to %s", c.Probe, describe(c.Spec), err, describe(previous))
+			d.record("probe failed: " + msg)
+			d.settle()
+			return errors.Join(fmt.Errorf("%w: %s", ErrProbeFailed, msg), restoreErr)
 		}
 	}
 	if c.ConfirmWithin > 0 {
@@ -150,7 +163,14 @@ func (d *Daemon) Apply(ctx context.Context, c Change) error {
 		return nil
 	}
 	d.record("switched to " + describe(c.Spec))
+	d.settle()
 	return nil
+}
+
+func (d *Daemon) settle() {
+	if d.OnSettled != nil {
+		d.OnSettled(d.Current())
+	}
 }
 
 // switchTo replaces from with to on the system. If to fails to start,
@@ -163,7 +183,7 @@ func (d *Daemon) switchTo(from, to *Spec) error {
 	}
 	if to != nil {
 		if err := d.tunnel.Start(*to); err != nil {
-			startErr := fmt.Errorf("start %s: %w", describe(to), err)
+			startErr := fmt.Errorf("%w: %s: %v", ErrStartFailed, describe(to), err)
 			if from != nil {
 				if err := d.tunnel.Start(*from); err != nil {
 					d.setCurrent(nil)
@@ -201,6 +221,7 @@ func (d *Daemon) expire(p *pendingChange, after time.Duration) {
 		msg += fmt.Sprintf(" (with errors: %v)", err)
 	}
 	d.record(msg)
+	d.settle()
 }
 
 // Confirm keeps the pending change.
@@ -213,10 +234,11 @@ func (d *Daemon) Confirm() error {
 	current := d.current
 	d.mu.Unlock()
 	if p == nil {
-		return errors.New("nothing to confirm: no change is pending")
+		return fmt.Errorf("nothing to confirm: %w", ErrNothingPending)
 	}
 	p.stop()
 	d.record("confirmed " + describe(current))
+	d.settle()
 	return nil
 }
 
@@ -230,13 +252,30 @@ func (d *Daemon) Rollback() error {
 	current := d.current
 	d.mu.Unlock()
 	if p == nil {
-		return errors.New("nothing to roll back: no change is pending")
+		return fmt.Errorf("nothing to roll back: %w", ErrNothingPending)
 	}
 	p.stop()
 	if err := d.switchTo(current, p.previous); err != nil {
 		return err
 	}
 	d.record(fmt.Sprintf("rolled back to %s on request", describe(p.previous)))
+	d.settle()
+	return nil
+}
+
+// Restart stops and starts the running spec again, e.g. after the
+// physical network changed. It does nothing while down.
+func (d *Daemon) Restart(reason string) error {
+	d.op.Lock()
+	defer d.op.Unlock()
+	current := d.Current()
+	if current == nil {
+		return nil
+	}
+	if err := d.switchTo(current, current); err != nil {
+		return err
+	}
+	d.record("restarted " + describe(current) + ": " + reason)
 	return nil
 }
 
