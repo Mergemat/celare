@@ -56,13 +56,18 @@ func requireRoot(command string) error {
 	return nil
 }
 
-// invokingUser is the user who ran sudo; the daemon serves them.
-func invokingUser() (*user.User, error) {
-	uid := os.Getenv("SUDO_UID")
-	if uid == "" {
-		return nil, failure("no_sudo_user", "can't tell which user to install for", "run it with sudo from your own account, not from a root shell")
+// invokingUser is the user the daemon serves: --uid when given (the app
+// installs through an admin prompt, which sets no SUDO_UID), else the
+// user who ran sudo.
+func invokingUser(uid int) (*user.User, error) {
+	id := os.Getenv("SUDO_UID")
+	if uid >= 0 {
+		id = strconv.Itoa(uid)
 	}
-	return user.LookupId(uid)
+	if id == "" {
+		return nil, failure("no_sudo_user", "can't tell which user to install for", "run it with sudo from your own account, or pass --uid")
+	}
+	return user.LookupId(id)
 }
 
 func plist(configDir, uid string) string {
@@ -99,12 +104,13 @@ func xmlEscape(s string) string {
 
 func (a *app) serviceInstallCmd() *cobra.Command {
 	var dryRun bool
+	var uid int
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install and start the daemon (sudo)",
 		Args:  exactArgs(0, "no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			u, err := invokingUser()
+			u, err := invokingUser(uid)
 			if err != nil {
 				return err
 			}
@@ -143,6 +149,7 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be installed")
+	cmd.Flags().IntVar(&uid, "uid", -1, "install for this user id instead of the one running sudo")
 	return cmd
 }
 
