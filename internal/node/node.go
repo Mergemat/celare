@@ -263,6 +263,9 @@ func parseVMess(payload string) (Node, error) {
 	return n, nil
 }
 
+// DecodeBase64 is decodeBase64 for other packages.
+func DecodeBase64(s string) ([]byte, error) { return decodeBase64(s) }
+
 // decodeBase64 accepts standard and URL-safe alphabets, with or without
 // padding; share-link generators use all four.
 func decodeBase64(s string) ([]byte, error) {
