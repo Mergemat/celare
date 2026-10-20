@@ -86,7 +86,9 @@ func socksClient(t *testing.T, port int) *http.Client {
 	t.Helper()
 	proxyURL, _ := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", port))
 	return &http.Client{
-		Timeout:   3 * time.Second,
+		// A fresh REALITY server holds its first connection for up to 5s
+		// while it probes its target.
+		Timeout:   10 * time.Second,
 		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true},
 	}
 }

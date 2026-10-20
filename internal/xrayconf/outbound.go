@@ -210,10 +210,15 @@ func streamSettings(n node.Node) (*StreamSettings, error) {
 		if err != nil {
 			return nil, err
 		}
+		alpn := n.Security.ALPN
+		if n.Protocol == "hysteria2" && len(alpn) == 0 {
+			// Hysteria2 servers only speak HTTP/3.
+			alpn = []string{"h3"}
+		}
 		s.TLSSettings = &TLSSettings{
 			ServerName:           n.Security.SNI,
 			Fingerprint:          n.Security.Fingerprint,
-			ALPN:                 n.Security.ALPN,
+			ALPN:                 alpn,
 			AllowInsecure:        n.Security.AllowInsecure,
 			ECHConfigList:        n.Security.ECHConfig,
 			PinnedPeerCertSHA256: pins,
