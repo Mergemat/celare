@@ -35,7 +35,10 @@ func (r ChangeRequest) confirmWithin() (time.Duration, error) {
 // Tunnel is GET /v1/tunnel: the daemon's state plus the system's.
 type Tunnel struct {
 	daemon.TunnelState
-	System *SystemInfo `json:"system,omitempty"`
+	// Version is the daemon's celare version; after an upgrade it can lag
+	// behind the CLI until the service is reinstalled.
+	Version string      `json:"version,omitempty"`
+	System  *SystemInfo `json:"system,omitempty"`
 }
 
 // SystemInfo is the machine-level side of the tunnel.

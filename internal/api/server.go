@@ -28,6 +28,8 @@ type Server struct {
 	StatePath string
 	// System, if set, adds machine details to GET /v1/tunnel.
 	System func() *SystemInfo
+	// Version is reported in GET /v1/tunnel.
+	Version string
 
 	mu       sync.Mutex
 	lastNode string
@@ -243,7 +245,7 @@ func (s *Server) spec(name string) (*daemon.Spec, *Error) {
 }
 
 func (s *Server) tunnel() Tunnel {
-	t := Tunnel{TunnelState: s.Daemon.Tunnel()}
+	t := Tunnel{TunnelState: s.Daemon.Tunnel(), Version: s.Version}
 	if s.System != nil {
 		t.System = s.System()
 	}

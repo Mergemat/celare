@@ -1,0 +1,54 @@
+name: release
+
+# Push a tag like v0.1.0 to publish Celare-0.1.0.zip (the app, CLI inside),
+# celare-0.1.0-darwin.tar.gz (CLI only) and checksums.txt, then update the
+# Homebrew formula in Mergemat/homebrew-tap when HOMEBREW_TAP_TOKEN is set.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make release VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/Celare-$v.zip" "dist/celare-$v-darwin.tar.gz" dist/checksums.txt \
+            --title "celare $v" --generate-notes
+
+      - name: Update the Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.TAP_TOKEN != ''
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sha=$(shasum -a 256 "dist/Celare-$v.zip" | cut -d' ' -f1)
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/Mergemat/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$sha/g" packaging/homebrew/celare.rb > tap/Formula/celare.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/celare.rb
+          git commit -m "celare $v"
+          git push

@@ -14,6 +14,15 @@ final class AppModel {
     var daemonMissing = false
     var busy: String?
     var error: CLI.Failure?
+    /// The bundled CLI's version; the daemon should match it.
+    var appVersion: String?
+
+    /// After the app is updated the running daemon is still the old one
+    /// until the service is installed again.
+    var serviceOutdated: Bool {
+        guard let app = appVersion, let daemon = tunnel?.version else { return false }
+        return app != daemon
+    }
 
     private var poller: Task<Void, Never>?
 
@@ -26,6 +35,10 @@ final class AppModel {
             }
         }
         Task { await refreshNodes() }
+        Task {
+            struct V: Decodable, Sendable { let version: String }
+            appVersion = try? await cli.run(["version"], as: V.self).version
+        }
     }
 
     func refreshTunnel() async {

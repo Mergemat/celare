@@ -16,6 +16,14 @@ struct MenuView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+            if model.serviceOutdated {
+                HStack {
+                    Text("The background service is an older version.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Update") { Task { await model.installService() } }
+                        .buttonStyle(ConvexButtonStyle(prominent: true))
+                }
+            }
             if model.daemonMissing {
                 installPrompt
             } else {

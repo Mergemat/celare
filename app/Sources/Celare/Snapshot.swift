@@ -11,6 +11,7 @@ enum Snapshot {
             state: "up", node: "main/Tokyo", since: Date().addingTimeInterval(-1800),
             pending: Change(id: "c1a2b3", action: "connect", state: "pending", from: Endpoint(node: "main/Osaka"),
                             to: Endpoint(node: "main/Tokyo"), deadline: Date().addingTimeInterval(24), reason: nil),
+            version: "0.1.0",
             system: SystemInfo(interface: "en0", tun: "utun8", foreignTunnels: nil))
         model.nodes = [
             NodeView(name: "main/Tokyo", source: "subscription:main", protocol: "vless", address: "203.0.113.1", port: 443, transport: "xhttp", security: "reality"),

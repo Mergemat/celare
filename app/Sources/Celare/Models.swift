@@ -25,6 +25,7 @@ struct Tunnel: Decodable, Sendable, Hashable {
     let node: String?
     let since: Date
     let pending: Change?
+    let version: String?
     let system: SystemInfo?
 
     var isUp: Bool { state == "up" }

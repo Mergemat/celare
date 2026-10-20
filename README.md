@@ -11,13 +11,19 @@ A macOS VPN client for every protocol [3x-ui](https://github.com/MHSanaei/3x-ui)
 
 ## Install
 
+**Homebrew**, for the app and the CLI together:
+
 ```sh
-scripts/build-app.sh                 # dist/Celare.app, with the CLI inside
-ln -s "$PWD/dist/Celare.app/Contents/Resources/celare" /usr/local/bin/celare
-sudo celare service install          # once: the root daemon that owns the tunnel
+brew install mergemat/tap/celare
+sudo celare service install        # once, and again after each upgrade
+open "$(brew --prefix)/opt/celare/Celare.app"
 ```
 
-Or open `dist/Celare.app`. It offers to install the service and asks for your password once.
+**Download**: get `Celare-<version>.zip` from [Releases](https://github.com/Mergemat/celare/releases) and move `Celare.app` to Applications. The app isn't notarized, so the first launch is blocked: open System Settings → Privacy & Security and click **Open Anyway**. The app then offers to install the background service, and doing so also puts `celare` on your PATH.
+
+**CLI only**: `celare-<version>-darwin.tar.gz` from Releases, or `go install github.com/Mergemat/celare/cmd/celare@latest`. Then `sudo celare service install`.
+
+The background service runs as root because it creates the tunnel interface and changes routes and DNS. After it is installed, nothing else needs sudo.
 
 ## Use
 
@@ -54,4 +60,14 @@ mkdir -p ~/.claude/skills/celare && celare skill > ~/.claude/skills/celare/SKILL
 | `internal/cli` | the `celare` command |
 | `app/` | the SwiftUI menu bar app, a client of the CLI |
 
-`go test ./...` runs everything that doesn't need root. `scripts/try-tunnel.sh <node>` checks the real tunnel once the service is installed.
+## Development
+
+```sh
+make test       # Go tests (none need root) and the app build
+make run        # build dist/Celare.app and open it
+make release    # the release zip, CLI tarball and checksums, as CI builds them
+```
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and, if the `HOMEBREW_TAP_TOKEN` secret is set, updates the formula in `Mergemat/homebrew-tap`.
+
+With the tunnel up, `celare doctor` checks that it carries traffic and shows the exit IP.

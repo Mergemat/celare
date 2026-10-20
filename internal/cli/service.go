@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	cliLink      = "/usr/local/bin/celare"
 	serviceLabel = "sh.celare.daemon"
 	plistPath    = "/Library/LaunchDaemons/" + serviceLabel + ".plist"
 	supportDir   = "/Library/Application Support/celare"
@@ -143,6 +144,9 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 			if err := waitForSocket(a.env.Socket, 10*time.Second); err != nil {
 				return failure("daemon_not_started", err.Error(), "see "+logPath)
 			}
+			if linkCLI(self) {
+				data["cli"] = cliLink
+			}
 			return a.ok(data, func(w io.Writer) {
 				fmt.Fprintf(w, "installed and started the daemon for %s\n", u.Username)
 			}, "celare nodes list", "celare connect <node> --confirm 30s")
@@ -151,6 +155,28 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be installed")
 	cmd.Flags().IntVar(&uid, "uid", -1, "install for this user id instead of the one running sudo")
 	return cmd
+}
+
+// linkCLI puts celare on the PATH for people who installed only the app:
+// when this binary runs from a downloaded Celare.app (Homebrew links its
+// own), /usr/local/bin/celare points at the root-owned installed copy,
+// which survives moving or replacing the app.
+func linkCLI(self string) bool {
+	fromApp := strings.Contains(self, ".app/Contents/Resources/")
+	fromBrew := strings.Contains(self, "/Cellar/") || strings.HasPrefix(self, "/opt/homebrew/")
+	if !fromApp || fromBrew {
+		return false
+	}
+	if target, err := os.Readlink(cliLink); err == nil && target != daemonBinary {
+		return false // someone else's celare; leave it
+	}
+	if _, err := os.Lstat(cliLink); err == nil {
+		os.Remove(cliLink)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	os.MkdirAll(filepath.Dir(cliLink), 0o755)
+	return os.Symlink(daemonBinary, cliLink) == nil
 }
 
 func installFile(src, dst string, mode os.FileMode) error {
@@ -197,6 +223,9 @@ func (a *app) serviceUninstallCmd() *cobra.Command {
 			recoverErr := (&system.Tunnel{Run: system.Exec, RestorePath: filepath.Join(supportDir, "restore.json")}).Recover()
 			for _, p := range []string{plistPath, daemonBinary, a.env.Socket} {
 				os.Remove(p)
+			}
+			if target, err := os.Readlink(cliLink); err == nil && target == daemonBinary {
+				os.Remove(cliLink)
 			}
 			if recoverErr != nil {
 				return failure("restore_failed", recoverErr.Error(), "check DNS in System Settings → Network")
@@ -328,6 +357,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	}
 	d := daemon.New(tunnel, wallClock{}, httpProbe{})
 	srv := &api.Server{
+		Version:   Version,
 		Daemon:    d,
 		ConfigDir: configDir,
 		StatePath: filepath.Join(supportDir, "state.json"),

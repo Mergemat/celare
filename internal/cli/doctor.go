@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -32,7 +35,12 @@ func (a *app) doctorCmd() *cobra.Command {
 			cfg, err := a.loadConfig()
 			switch {
 			case err != nil:
-				add("config", "fail", err.Error(), "run `celare config init` or fix config.toml")
+				detail := err.Error()
+				var e *apiError
+				if errors.As(err, &e) {
+					detail = e.Message
+				}
+				add("config", "fail", detail, "run `celare config init` or fix config.toml")
 			case len(cfg.Check()) > 0:
 				add("config", "fail", fmt.Sprintf("%d problems", len(cfg.Check())), "run `celare config check`")
 			default:
@@ -54,13 +62,24 @@ func (a *app) doctorCmd() *cobra.Command {
 			}
 
 			svc := a.serviceStatus(cmd.Context())
+			tunnel, tunnelErr := a.client().Tunnel(cmd.Context())
 			switch {
 			case !svc.Installed:
 				add("daemon", "fail", "not installed", "run `sudo celare service install`")
-			case !svc.Reachable:
+			case tunnelErr != nil:
 				add("daemon", "fail", "installed but not answering on "+a.env.Socket, "see "+svc.Log+", then `sudo celare service install` to restart it")
+			case tunnel.Version != Version:
+				add("daemon", "warn", fmt.Sprintf("daemon is %s, this CLI is %s", tunnel.Version, Version), "run `sudo celare service install` to update it")
 			default:
-				add("daemon", "ok", fmt.Sprintf("running (pid %d)", svc.PID), "")
+				add("daemon", "ok", fmt.Sprintf("%s, running (pid %d)", tunnel.Version, svc.PID), "")
+			}
+			if tunnelErr == nil && tunnel.State == "up" {
+				ip, latency, err := exitIP(cmd.Context())
+				if err != nil {
+					add("tunnel", "fail", fmt.Sprintf("up on %s but traffic doesn't get through: %v", tunnel.Node, err), "run `celare nodes test` and connect to a node that works")
+				} else {
+					add("tunnel", "ok", fmt.Sprintf("%s carries traffic: exit IP %s, %d ms", tunnel.Node, ip, latency.Milliseconds()), "")
+				}
 			}
 
 			t := &system.Tunnel{Run: system.Exec}
@@ -69,7 +88,7 @@ func (a *app) doctorCmd() *cobra.Command {
 				add("network", "fail", err.Error(), "connect Wi-Fi or Ethernet")
 			} else {
 				add("network", "ok", fmt.Sprintf("%s via %s (%s)", route.Interface, route.Gateway, service), "")
-				if tunnel, err := a.client().Tunnel(cmd.Context()); err == nil && tunnel.State == "down" {
+				if tunnelErr == nil && tunnel.State == "down" {
 					if out, err := system.Exec("networksetup", "-getdnsservers", service); err == nil &&
 						strings.Contains(out, netconf.TunnelDNS) {
 						add("dns", "fail", service+" still points DNS at the tunnel, which is down", "run `networksetup -setdnsservers \""+service+"\" Empty`")
@@ -77,7 +96,7 @@ func (a *app) doctorCmd() *cobra.Command {
 				}
 			}
 			ours := ""
-			if tunnel, err := a.client().Tunnel(cmd.Context()); err == nil && tunnel.System != nil {
+			if tunnelErr == nil && tunnel.System != nil {
 				ours = tunnel.System.Tun
 			}
 			if out, err := system.Exec("netstat", "-rn", "-f", "inet"); err == nil {
@@ -119,4 +138,20 @@ func (a *app) doctorCmd() *cobra.Command {
 			return a.ok(checks, print, next...)
 		},
 	}
+}
+
+// exitIP fetches the public IP the internet sees, which through a working
+// tunnel is the node's.
+func exitIP(ctx context.Context) (string, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org", nil)
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	return strings.TrimSpace(string(b)), time.Since(start), err
 }
