@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 
@@ -29,7 +30,10 @@ type Tunnel struct {
 	// StartEngine starts Xray with a JSON config.
 	StartEngine func(configJSON []byte) (io.Closer, error)
 	// Lookup resolves the server's domain before DNS moves into the tunnel.
-	Lookup      func(host string) ([]net.IP, error)
+	Lookup func(host string) ([]net.IP, error)
+	// CanReach opens a TCP connection to host:port bound to iface, the way
+	// Xray will reach the server once the tunnel is up.
+	CanReach    func(host string, port int, iface string) error
 	RestorePath string
 
 	// mu guards session: status reads it while the daemon changes it.
@@ -134,6 +138,12 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	n, err := t.pinAddress(s.Node)
 	if err != nil {
 		return err
+	}
+	if usesTCP(n) && t.CanReach != nil {
+		if err := t.CanReach(n.Address, n.Port, route.Interface); err != nil {
+			return fmt.Errorf("can't reach the server %s:%d directly over %s (%v). A VPN app's firewall is probably blocking traffic outside its own tunnel, even while that VPN looks disconnected (Mullvad, V2Box). Quit it and connect again",
+				n.Address, n.Port, route.Interface, err)
+		}
 	}
 	dns := s.DNS
 	if len(dns) == 0 {
@@ -259,4 +269,16 @@ func (t *Tunnel) pinAddress(n node.Node) (node.Node, error) {
 		}
 	}
 	return n, nil
+}
+
+// usesTCP reports whether Xray reaches the server over TCP, which is what
+// CanReach can check. Hysteria2, WireGuard and mKCP run over UDP.
+func usesTCP(n node.Node) bool {
+	switch {
+	case n.Protocol == "hysteria2", n.Protocol == "wireguard", n.Transport.Type == "kcp":
+		return false
+	case n.Transport.Type == "xhttp" && n.Transport.Mode == "stream-one" && slices.Contains(n.Security.ALPN, "h3"):
+		return false
+	}
+	return true
 }

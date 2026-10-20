@@ -88,6 +88,14 @@ func (a *app) doctorCmd() *cobra.Command {
 				add("network", "fail", err.Error(), "connect Wi-Fi or Ethernet")
 			} else {
 				add("network", "ok", fmt.Sprintf("%s via %s (%s)", route.Interface, route.Gateway, service), "")
+				// celare reaches its servers by leaving through the physical
+				// interface directly; some VPN firewalls refuse exactly that.
+				if err := system.DialBound("1.1.1.1", 443, route.Interface); err != nil {
+					add("direct path", "fail", fmt.Sprintf("traffic can't leave by %s directly: %v", route.Interface, err),
+						"quit VPN apps whose firewall blocks traffic outside their tunnel (Mullvad, V2Box), even when they look disconnected")
+				} else {
+					add("direct path", "ok", "servers are reachable over "+route.Interface, "")
+				}
 				if tunnelErr == nil && tunnel.State == "down" {
 					if out, err := system.Exec("networksetup", "-getdnsservers", service); err == nil &&
 						strings.Contains(out, netconf.TunnelDNS) {

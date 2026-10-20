@@ -3,6 +3,7 @@ package system_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -74,6 +75,7 @@ func newTunnel(t *testing.T, r *fakeRunner, e *fakeEngine) (*system.Tunnel, stri
 	return &system.Tunnel{
 		Run:         r.Run,
 		StartEngine: e.start,
+		CanReach:    func(string, int, string) error { return nil },
 		Lookup: func(host string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("203.0.113.9")}, nil
 		},
@@ -238,6 +240,31 @@ func TestStartRefusesWhileAnotherVPNHoldsTheDefaultRoute(t *testing.T) {
 	err := tun.Start(tokyo)
 	if err == nil || !strings.Contains(err.Error(), "utun4") || !strings.Contains(err.Error(), "turn it off") {
 		t.Fatalf("err = %v, want a refusal naming utun4", err)
+	}
+	if len(r.ran) != 0 || len(e.configs) != 0 {
+		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))
+	}
+}
+
+// Another VPN's firewall (Mullvad even while disconnected, V2Box) can
+// refuse traffic that leaves by Wi-Fi outside its own tunnel. celare's
+// connection to the server is exactly that, so it must find out before
+// touching routes and DNS, and say why.
+func TestStartFailsFastWhenTheServerCantBeReachedDirectly(t *testing.T) {
+	r := &fakeRunner{netstat: netstatOut}
+	e := &fakeEngine{}
+	tun, _ := newTunnel(t, r, e)
+	var asked string
+	tun.CanReach = func(host string, port int, iface string) error {
+		asked = fmt.Sprintf("%s:%d via %s", host, port, iface)
+		return errors.New("connect: connection refused")
+	}
+	err := tun.Start(tokyo)
+	if err == nil || !strings.Contains(err.Error(), "firewall") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v, want it to blame a firewall and keep the cause", err)
+	}
+	if asked != "203.0.113.9:443 via en0" {
+		t.Errorf("checked %q, want the resolved server via en0", asked)
 	}
 	if len(r.ran) != 0 || len(e.configs) != 0 {
 		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))

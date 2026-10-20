@@ -40,7 +40,7 @@ enum Snapshot {
         ]
         func tunnel(up: Bool, pending: Change? = nil) -> Tunnel {
             Tunnel(state: up ? "up" : "down", node: up ? "main/Tokyo" : nil, since: Date().addingTimeInterval(-1800),
-                   pending: pending, version: nil, system: SystemInfo(interface: up ? "en0" : nil, tun: nil, foreignTunnels: nil))
+                   pending: pending, version: nil, lastNode: up ? "main/Tokyo" : nil, system: SystemInfo(interface: up ? "en0" : nil, tun: nil, foreignTunnels: nil))
         }
         model.nodesLoaded = true
         switch scenario {

@@ -37,8 +37,10 @@ type Tunnel struct {
 	daemon.TunnelState
 	// Version is the daemon's celare version; after an upgrade it can lag
 	// behind the CLI until the service is reinstalled.
-	Version string      `json:"version,omitempty"`
-	System  *SystemInfo `json:"system,omitempty"`
+	Version string `json:"version,omitempty"`
+	// LastNode is what a bare connect reconnects; empty if none yet.
+	LastNode string      `json:"lastNode,omitempty"`
+	System   *SystemInfo `json:"system,omitempty"`
 }
 
 // SystemInfo is the machine-level side of the tunnel.

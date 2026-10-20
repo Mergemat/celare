@@ -110,6 +110,10 @@ func TestConnectWithoutANodeReconnectsTheLastOne(t *testing.T) {
 	e := serve(t, configTOML)
 	mustChange(t, e.client, api.ChangeRequest{Action: "connect", Node: "osaka"})
 	mustChange(t, e.client, api.ChangeRequest{Action: "disconnect"})
+	tun, err := e.client.Tunnel(ctx)
+	if err != nil || tun.LastNode != "osaka" {
+		t.Fatalf("tunnel = %+v, %v; want lastNode osaka while down", tun, err)
+	}
 	mustChange(t, e.client, api.ChangeRequest{Action: "connect"})
 	if e.tun.running != "osaka" {
 		t.Errorf("running %q, want osaka again", e.tun.running)

@@ -245,7 +245,10 @@ func (s *Server) spec(name string) (*daemon.Spec, *Error) {
 }
 
 func (s *Server) tunnel() Tunnel {
-	t := Tunnel{TunnelState: s.Daemon.Tunnel(), Version: s.Version}
+	s.mu.Lock()
+	last := s.lastNode
+	s.mu.Unlock()
+	t := Tunnel{TunnelState: s.Daemon.Tunnel(), Version: s.Version, LastNode: last}
 	if s.System != nil {
 		t.System = s.System()
 	}

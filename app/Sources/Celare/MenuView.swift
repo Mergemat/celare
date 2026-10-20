@@ -90,10 +90,16 @@ struct MenuView: View {
                     Text(detail(for: name)).font(.mono).foregroundStyle(.secondary)
                 } else {
                     Text("Not connected").font(.system(size: 17, weight: .semibold))
-                    Text("Pick a node, or connect to the last one.").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    Text(model.connectTarget == nil ? "Pick a node below." : "Connect, or pick another node below.")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    /// "main/Tokyo" → "Tokyo": the bar has no room for the prefix.
+    private func shortName(_ name: String) -> String {
+        name.split(separator: "/", maxSplits: 1).last.map(String.init) ?? name
     }
 
     private func detail(for name: String) -> String {
@@ -126,9 +132,12 @@ struct MenuView: View {
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(model.busy != nil)
             } else {
-                Button { Task { await model.connect(nil) } } label: { Label("Connect", systemImage: "power") }
-                    .buttonStyle(PrimaryBarStyle())
-                    .disabled(model.busy != nil)
+                let target = model.connectTarget
+                Button { Task { await model.connect(target) } } label: {
+                    Label(target.map { "Connect to \(shortName($0))" } ?? "Connect", systemImage: "power")
+                }
+                .buttonStyle(PrimaryBarStyle())
+                .disabled(target == nil || model.busy != nil)
             }
             if model.serviceOutdated {
                 quietNote("The background service is older than this app.", action: "Update") {

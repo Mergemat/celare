@@ -411,6 +411,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 			return engineCloser{e}, nil
 		},
 		Lookup:      func(host string) ([]net.IP, error) { return net.LookupIP(host) },
+		CanReach:    system.DialBound,
 		RestorePath: filepath.Join(supportDir, "restore.json"),
 	}
 	if err := tunnel.Recover(); err != nil {

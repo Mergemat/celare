@@ -44,6 +44,13 @@ final class AppModel {
         return nodes.isEmpty ? .needsNodes : .ready
     }
 
+    /// What Connect connects to: the last node if it still exists, else
+    /// the only node there is. nil means the user has to pick one.
+    var connectTarget: String? {
+        if let last = tunnel?.lastNode, nodes.contains(where: { $0.name == last }) { return last }
+        return nodes.count == 1 ? nodes[0].name : nil
+    }
+
     /// After the app is updated the running daemon is still the old one
     /// until the service is installed again.
     var serviceOutdated: Bool {
