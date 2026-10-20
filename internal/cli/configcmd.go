@@ -165,7 +165,7 @@ func (a *app) configRenderCmd() *cobra.Command {
 				n = n.Redacted()
 			}
 			iface := "en0"
-			if route, _, err := (&system.Tunnel{Run: system.Exec}).Physical(); err == nil {
+			if route, _, err := (&system.Tunnel{}).Physical(); err == nil {
 				iface = route.Interface
 			}
 			def := cfg.Default

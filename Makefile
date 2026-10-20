@@ -21,8 +21,8 @@ test:
 
 cli:
 	@mkdir -p $(DIST)
-	GOOS=darwin GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o $(DIST)/celare-arm64 ./cmd/celare
-	GOOS=darwin GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o $(DIST)/celare-amd64 ./cmd/celare
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o $(DIST)/celare-arm64 ./cmd/celare
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o $(DIST)/celare-amd64 ./cmd/celare
 	lipo -create -output $(DIST)/celare $(DIST)/celare-arm64 $(DIST)/celare-amd64
 	rm $(DIST)/celare-arm64 $(DIST)/celare-amd64
 	codesign --force --sign - $(DIST)/celare

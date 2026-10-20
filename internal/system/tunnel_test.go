@@ -10,14 +10,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Mergemat/celare/internal/config"
 	"github.com/Mergemat/celare/internal/daemon"
+	"github.com/Mergemat/celare/internal/netconf"
 	"github.com/Mergemat/celare/internal/node"
 	"github.com/Mergemat/celare/internal/system"
-	"github.com/google/go-cmp/cmp"
 )
 
 const netstatOut = `Internet:
@@ -29,50 +28,31 @@ const serviceOrderOut = `(1) Wi-Fi
 (Hardware Port: Wi-Fi, Device: en0)
 `
 
-// fakeRunner answers read-only commands from canned output and records
-// the ones that change the system.
+// fakeRunner records system effects, independent of their native encoding.
 type fakeRunner struct {
-	ncList   string
 	netstat  string
-	ran      [][]string
+	ran      []string
 	failWhen string
-	mu       sync.Mutex
 }
 
-// ranSorted is what ran, in a stable order: commands that don't depend on
-// each other run at once.
-func (r *fakeRunner) ranSorted() [][]string {
-	out := slices.Clone(r.ran)
-	slices.SortFunc(out, func(a, b []string) int { return strings.Compare(strings.Join(a, " "), strings.Join(b, " ")) })
-	return out
-}
+func (r *fakeRunner) has(effect string) bool { return slices.Contains(r.ran, effect) }
 
-func (r *fakeRunner) has(cmd string) bool {
-	return slices.ContainsFunc(r.ran, func(c []string) bool { return strings.Join(c, " ") == cmd })
-}
-
-func (r *fakeRunner) Run(name string, args ...string) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	cmd := append([]string{name}, args...)
-	line := strings.Join(cmd, " ")
-	switch {
-	case line == "netstat -rn -f inet":
-		return r.netstat, nil
-	case line == "networksetup -listnetworkserviceorder":
-		return serviceOrderOut, nil
-	case line == "networksetup -getdnsservers Wi-Fi":
-		return "1.1.1.1\n", nil
-	case line == "ifconfig -l":
-		return "lo0 en0 utun0 utun4\n", nil
-	case line == "scutil --nc list":
-		return r.ncList, nil
+func (r *fakeRunner) route(add bool, spec system.RouteSpec) error {
+	op := "delete"
+	if add {
+		op = "add"
 	}
-	r.ran = append(r.ran, cmd)
-	if r.failWhen != "" && strings.Contains(line, r.failWhen) {
-		return "route: writing to routing socket: File exists", errors.New("exit status 1")
+	line := fmt.Sprintf("%s %s via %s scoped=%v", op, spec.Prefix, spec.Interface, spec.Scoped)
+	r.ran = append(r.ran, line)
+	if add && r.failWhen != "" && strings.Contains(line, r.failWhen) {
+		return errors.New("route: File exists")
 	}
-	return "", nil
+	return nil
+}
+
+func (r *fakeRunner) dns(enabled bool) error {
+	r.ran = append(r.ran, fmt.Sprintf("dns %v", enabled))
+	return nil
 }
 
 type fakeEngine struct {
@@ -93,7 +73,10 @@ func newTunnel(t *testing.T, r *fakeRunner, e *fakeEngine) (*system.Tunnel, stri
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "restore.json")
 	return &system.Tunnel{
-		Run:         r.Run,
+		Routes:      func() ([]netconf.Route, error) { return netconf.ParseDefaultRoutes(r.netstat), nil },
+		Interfaces:  func() ([]string, error) { return []string{"lo0", "en0", "utun0", "utun4"}, nil },
+		ChangeRoute: r.route,
+		SetDNS:      r.dns,
 		StartEngine: e.start,
 		CanReach:    func(string, int, string) error { return nil },
 		Lookup: func(host string) ([]net.IP, error) {
@@ -119,16 +102,11 @@ func TestStartRoutesIntoAFreshUtunAndBindsToWiFi(t *testing.T) {
 	if err := tun.Start(tokyo); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"networksetup", "-setdnsservers", "Wi-Fi", "169.254.10.1"},
-		{"route", "-n", "add", "-ifscope", "en0", "default", "192.168.1.1"},
-		{"route", "-n", "add", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
-		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun5"},
-		{"route", "-n", "add", "-net", "0.0.0.0/1", "-interface", "utun5"},
-		{"route", "-n", "add", "-net", "128.0.0.0/1", "-interface", "utun5"},
+	if !r.has("add 0.0.0.0/0 via en0 scoped=true") || !r.has("add 0.0.0.0/1 via utun5 scoped=false") || !r.has("add ::/1 via utun5 scoped=false") || !r.has("dns true") {
+		t.Fatalf("missing tunnel setup: %v", r.ran)
 	}
-	if diff := cmp.Diff(want, r.ranSorted()); diff != "" {
-		t.Errorf("commands mismatch (-want +got):\n%s", diff)
+	if r.ran[0] != "add 0.0.0.0/0 via en0 scoped=true" || r.ran[len(r.ran)-1] != "dns true" {
+		t.Fatalf("upstream must be pinned first and DNS changed last: %v", r.ran)
 	}
 
 	var cfg struct {
@@ -183,17 +161,10 @@ func TestStopRestoresDNSAndRemovesRoutes(t *testing.T) {
 	if err := tun.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1"},
-		{"route", "-n", "delete", "-ifscope", "en0", "default", "192.168.1.1"},
-		{"route", "-n", "delete", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-inet6", "-net", "::/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-net", "0.0.0.0/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-net", "128.0.0.0/1", "-interface", "utun5"},
+	if r.ran[0] != "dns false" || !r.has("delete 0.0.0.0/1 via utun5 scoped=false") || !r.has("delete 8000::/1 via utun5 scoped=false") || !r.has("delete 0.0.0.0/0 via en0 scoped=true") {
+		t.Fatalf("DNS must be restored before routes are removed: %v", r.ran)
 	}
-	if diff := cmp.Diff(want, r.ranSorted()); diff != "" {
-		t.Errorf("commands mismatch (-want +got):\n%s", diff)
-	}
+
 	if e.closed != 1 {
 		t.Errorf("engine closed %d times, want 1", e.closed)
 	}
@@ -210,7 +181,7 @@ func TestFailedRouteUndoesEverything(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "File exists") {
 		t.Fatalf("err = %v, want the route error", err)
 	}
-	if !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") || !r.has("route -n delete -net 0.0.0.0/1 -interface utun5") {
+	if !r.has("dns false") || !r.has("delete 0.0.0.0/1 via utun5 scoped=false") {
 		t.Errorf("ran %v, want routes removed and DNS restored", r.ran)
 	}
 	if e.closed != 1 {
@@ -231,11 +202,11 @@ func TestRecoverUndoesACrashedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.ran = nil
-	fresh := &system.Tunnel{Run: r.Run, RestorePath: restore}
+	fresh := &system.Tunnel{ChangeRoute: r.route, SetDNS: r.dns, RestorePath: restore}
 	if err := fresh.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.ran) != 6 || !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") {
+	if len(r.ran) != 6 || !r.has("dns false") {
 		t.Errorf("recover ran %v, want the five route deletes and the DNS restore", r.ran)
 	}
 	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
@@ -254,7 +225,7 @@ func TestStartWithoutNetworkExplainsWhy(t *testing.T) {
 
 // With V2Box connected, celare goes out through it like any other app:
 // no refusal, the server connection is bound to V2Box's tunnel, and DNS is
-// still saved and restored on the Wi-Fi service.
+// overridden only for this session.
 func TestStartGoesOutThroughAnotherVPN(t *testing.T) {
 	r := &fakeRunner{netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n"}
 	e := &fakeEngine{}
@@ -270,15 +241,15 @@ func TestStartGoesOutThroughAnotherVPN(t *testing.T) {
 	if !strings.Contains(e.configs[0], `"interface": "utun4"`) {
 		t.Errorf("outbounds not bound to utun4:\n%s", e.configs[0])
 	}
-	if !r.has("networksetup -setdnsservers Wi-Fi 169.254.10.1") {
-		t.Errorf("ran %v, want DNS set on Wi-Fi", r.ran)
+	if !r.has("dns true") {
+		t.Errorf("ran %v, want the temporary DNS override", r.ran)
 	}
 	if tun.Interface() != "utun4" {
 		t.Errorf("Interface() = %q, want utun4", tun.Interface())
 	}
 	// Without a default scoped to utun4, Xray's bound connections would
 	// follow the tunnel's own routes back into it.
-	if !r.has("route -n add -ifscope utun4 default -interface utun4") {
+	if !r.has("add 0.0.0.0/0 via utun4 scoped=true") {
 		t.Errorf("ran %v, want a default route scoped to utun4", r.ran)
 	}
 }
@@ -294,7 +265,7 @@ func TestStartKeepsAnExistingScopedDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cmd := range r.ran {
-		if slices.Contains(cmd, "-ifscope") {
+		if strings.Contains(cmd, "scoped=true") {
 			t.Errorf("touched the system's scoped default: %v", cmd)
 		}
 	}
@@ -317,7 +288,7 @@ func TestStartUndoesWhenTheServerStopsAnsweringOnceRouted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "once traffic was routed into the tunnel") {
 		t.Fatalf("err = %v, want the post-route reach failure", err)
 	}
-	if !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") {
+	if !r.has("dns false") {
 		t.Errorf("ran %v, want DNS restored", r.ran)
 	}
 	if e.closed != 1 || tun.Interface() != "" {
@@ -348,5 +319,31 @@ func TestStartFailsFastWhenTheServerIsUnreachable(t *testing.T) {
 	}
 	if len(r.ran) != 0 || len(e.configs) != 0 {
 		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))
+	}
+}
+
+func TestFailedDNSCleanupKeepsRestoreFileForRetry(t *testing.T) {
+	r := &fakeRunner{netstat: netstatOut}
+	e := &fakeEngine{}
+	tun, restore := newTunnel(t, r, e)
+	if err := tun.Start(tokyo); err != nil {
+		t.Fatal(err)
+	}
+	tun.SetDNS = func(bool) error { return errors.New("configd unavailable") }
+	if err := tun.Stop(); err == nil || !strings.Contains(err.Error(), "configd unavailable") {
+		t.Fatalf("lost DNS error: %v", err)
+	}
+	if e.closed != 1 {
+		t.Fatal("cleanup left engine running")
+	}
+	if _, err := os.Stat(restore); err != nil {
+		t.Fatalf("lost recovery data: %v", err)
+	}
+	tun.SetDNS = r.dns
+	if err := tun.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore file remains: %v", err)
 	}
 }

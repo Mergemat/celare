@@ -4,7 +4,6 @@
 package netconf
 
 import (
-	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -103,19 +102,6 @@ func HasScopedDefault(routes []Route, iface string) bool {
 	return false
 }
 
-// ScopedDefault is the route command (op "add" or "delete") for a default
-// route scoped to up's interface. Xray's outbounds are bound to that
-// interface (IP_BOUND_IF), so their lookups only accept routes through
-// it; the primary interface has no scoped default, so once the tunnel's
-// half-default routes are in, they would be sent back into the tunnel.
-func ScopedDefault(op string, up Route) []string {
-	cmd := []string{"route", "-n", op, "-ifscope", up.Interface, "default"}
-	if net.ParseIP(up.Gateway) == nil {
-		return append(cmd, "-interface", up.Interface)
-	}
-	return append(cmd, up.Gateway)
-}
-
 var (
 	serviceLine = regexp.MustCompile(`^\((\d+|\*)\) (.+)$`)
 	deviceLine  = regexp.MustCompile(`Device: ([^)]*)\)`)
@@ -159,49 +145,6 @@ func ParseDNSServers(out string) []string {
 		servers = append(servers, line)
 	}
 	return servers
-}
-
-// halfDefaults are more specific than 0.0.0.0/0 and ::/0, so they win
-// over the physical default route without touching it.
-var halfDefaults = []struct{ family, net string }{
-	{"", "0.0.0.0/1"},
-	{"", "128.0.0.0/1"},
-	{"-inet6", "::/1"},
-	{"-inet6", "8000::/1"},
-}
-
-func routeCmd(op, family, net, tun string) []string {
-	cmd := []string{"route", "-n", op}
-	if family != "" {
-		cmd = append(cmd, family)
-	}
-	return append(cmd, "-net", net, "-interface", tun)
-}
-
-// UpCommands routes all traffic into tun and points service's DNS at the
-// tunnel resolver.
-func UpCommands(tun, service string) [][]string {
-	var cmds [][]string
-	for _, h := range halfDefaults {
-		cmds = append(cmds, routeCmd("add", h.family, h.net, tun))
-	}
-	return append(cmds, []string{"networksetup", "-setdnsservers", service, TunnelDNS})
-}
-
-// DownCommands undoes UpCommands, restoring the DNS servers saved before
-// the tunnel came up (none means back to DHCP).
-func DownCommands(tun, service string, savedDNS []string) [][]string {
-	var cmds [][]string
-	for _, h := range halfDefaults {
-		cmds = append(cmds, routeCmd("delete", h.family, h.net, tun))
-	}
-	dns := []string{"networksetup", "-setdnsservers", service}
-	if len(savedDNS) == 0 {
-		dns = append(dns, "Empty")
-	} else {
-		dns = append(dns, savedDNS...)
-	}
-	return append(cmds, dns)
 }
 
 // FreeTunName picks a utun name above every existing one, so it can't

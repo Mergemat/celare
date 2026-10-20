@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,131 +16,124 @@ import (
 	"time"
 )
 
-// Running Xray in its own process is the only way to be sure a TUN
-// interface is released: xray-core 26.3 never closes the TUN device when
-// an instance is closed, so in-process sessions leak utuns. A process's
-// descriptors all close when it exits.
-
-// Command is how to start a child that runs ServeChild with the config
-// path as its last argument (the daemon uses `celare service xray`).
+// Each tunnel gets its own process because Xray does not release its TUN
+// descriptor on Close. Preparing the next process ahead of time keeps process
+// launch and library initialization out of the connect path.
 type Command struct {
 	Argv []string
-	// Env for the child; nil inherits the parent's.
-	Env []string
-	// WorkDir holds the config file while the child reads it.
-	WorkDir string
+	Env  []string
 }
 
 const (
-	readyLine  = "celare-engine: ready"
-	errorLine  = "celare-engine: error: "
-	startLimit = 15 * time.Second
+	waitingLine = "celare-engine: waiting"
+	readyLine   = "celare-engine: ready"
+	errorLine   = "celare-engine: error: "
+	startLimit  = 15 * time.Second
 )
 
-// Process is one running Xray child.
 type Process struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	path  string
-	done  chan struct{}
-	once  sync.Once
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	done   chan struct{}
+	status chan error
+	once   sync.Once
 }
 
-// StartProcess starts a child Xray with configJSON and returns once it is
-// serving, or with Xray's own error if it can't start.
-func StartProcess(c Command, configJSON []byte) (*Process, error) {
-	if err := os.MkdirAll(c.WorkDir, 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.CreateTemp(c.WorkDir, "xray-*.json")
-	if err != nil {
-		return nil, err
-	}
-	path := f.Name()
-	_, werr := f.Write(configJSON)
-	f.Close()
-	if werr != nil {
-		os.Remove(path)
-		return nil, werr
-	}
-
-	cmd := exec.Command(c.Argv[0], append(append([]string{}, c.Argv[1:]...), path)...)
-	cmd.Env = c.Env
-	cmd.Stderr = os.Stderr
+func prepare(c Command) (*Process, error) {
+	cmd := exec.Command(c.Argv[0], c.Argv[1:]...)
+	cmd.Env, cmd.Stderr = c.Env, os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		os.Remove(path)
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		os.Remove(path)
+		stdin.Close()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		os.Remove(path)
+		stdin.Close()
+		stdout.Close()
 		return nil, fmt.Errorf("start the engine process: %w", err)
 	}
-	p := &Process{cmd: cmd, stdin: stdin, path: path, done: make(chan struct{})}
-	go func() { cmd.Wait(); close(p.done) }()
-
-	result := make(chan error, 1)
+	p := &Process{cmd: cmd, stdin: stdin, done: make(chan struct{}), status: make(chan error, 2)}
 	go func() {
+		defer close(p.status)
 		scan := bufio.NewScanner(stdout)
 		for scan.Scan() {
-			line := scan.Text()
-			switch {
-			case line == readyLine:
-				result <- nil
-				io.Copy(io.Discard, stdout)
-				return
+			switch line := scan.Text(); {
+			case line == waitingLine, line == readyLine:
+				p.status <- nil
 			case strings.HasPrefix(line, errorLine):
-				result <- errors.New(strings.TrimPrefix(line, errorLine))
-				return
+				p.status <- errors.New(strings.TrimPrefix(line, errorLine))
 			}
 		}
-		result <- errors.New("the engine process exited before it was ready")
+		cmd.Wait()
+		close(p.done)
 	}()
-	select {
-	case err := <-result:
-		if err != nil {
-			p.Close()
-			return nil, err
-		}
-		return p, nil
-	case <-time.After(startLimit):
+	if err := p.wait(); err != nil {
 		p.Close()
-		return nil, fmt.Errorf("the engine process was not ready within %s", startLimit)
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *Process) wait() error {
+	timer := time.NewTimer(startLimit)
+	defer timer.Stop()
+	select {
+	case err, ok := <-p.status:
+		if !ok {
+			return errors.New("the engine process exited before it was ready")
+		}
+		return err
+	case <-timer.C:
+		return fmt.Errorf("the engine process was not ready within %s", startLimit)
 	}
 }
 
-// PID is the child's process id.
+func (p *Process) start(configJSON []byte) (*Process, error) {
+	// One JSON value on stdin replaces the credential-bearing temporary file.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, configJSON); err != nil {
+		p.Close()
+		return nil, err
+	}
+	compact.WriteByte('\n')
+	if _, err := p.stdin.Write(compact.Bytes()); err != nil {
+		p.Close()
+		return nil, err
+	}
+	if err := p.wait(); err != nil {
+		p.Close()
+		return nil, err
+	}
+	return p, nil
+}
+
 func (p *Process) PID() int { return p.cmd.Process.Pid }
 
-// Close stops the child (SIGTERM, then SIGKILL after 3s) and waits for it.
+// Close releases the process's sockets immediately. There is no persistent
+// state inside Xray to flush, and the daemon has already restored DNS/routes.
 func (p *Process) Close() error {
 	p.once.Do(func() {
 		p.stdin.Close()
-		p.cmd.Process.Signal(syscall.SIGTERM)
-		select {
-		case <-p.done:
-		case <-time.After(3 * time.Second):
-			p.cmd.Process.Kill()
-			<-p.done
-		}
-		os.Remove(p.path)
+		p.cmd.Process.Kill()
+		<-p.done
 	})
 	return nil
 }
 
-// ServeChild is the child's side: read and delete the config, start Xray,
-// say ready, and run until told to stop or the parent goes away (stdin
-// closes).
-func ServeChild(configPath string, stdin io.Reader, stdout io.Writer) error {
-	cfg, err := os.ReadFile(configPath)
-	os.Remove(configPath) // it holds credentials
+// ServeChild waits for a config without opening a tunnel, then serves until
+// signalled or its parent closes stdin. The process owns no on-disk secrets.
+func ServeChild(stdin io.Reader, stdout io.Writer) error {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(stop)
+	fmt.Fprintln(stdout, waitingLine)
+	reader := bufio.NewReader(stdin)
+	cfg, err := reader.ReadBytes('\n')
 	if err != nil {
-		fmt.Fprintln(stdout, errorLine+err.Error())
 		return err
 	}
 	e, err := Start(cfg)
@@ -147,11 +142,8 @@ func ServeChild(configPath string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintln(stdout, readyLine)
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	parentGone := make(chan struct{})
-	go func() { io.Copy(io.Discard, stdin); close(parentGone) }()
+	go func() { io.Copy(io.Discard, reader); close(parentGone) }()
 	select {
 	case <-stop:
 	case <-parentGone:

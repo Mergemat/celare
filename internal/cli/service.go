@@ -144,6 +144,8 @@ func plist(configDir, uid string) string {
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>StandardOutPath</key>
 	<string>` + logPath + `</string>
 	<key>StandardErrorPath</key>
@@ -301,7 +303,7 @@ func (a *app) serviceUninstallCmd() *cobra.Command {
 			}
 			// Stopping the daemon takes the tunnel down cleanly.
 			exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
-			recoverErr := (&system.Tunnel{Run: system.Exec, RestorePath: filepath.Join(supportDir, "restore.json")}).Recover()
+			recoverErr := (&system.Tunnel{RestorePath: filepath.Join(supportDir, "restore.json")}).Recover()
 			for _, p := range []string{plistPath, daemonBinary, a.env.Socket} {
 				os.Remove(p)
 			}
@@ -392,12 +394,12 @@ func (a *app) serviceRunCmd() *cobra.Command {
 // in, so stopping a tunnel ends a process and releases its utun.
 func (a *app) serviceXrayCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "xray <config>",
+		Use:    "xray",
 		Short:  "Run one tunnel's Xray (the daemon starts this)",
 		Hidden: true,
-		Args:   exactArgs(1, "a config file"),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := engine.ServeChild(args[0], os.Stdin, os.Stdout); err != nil {
+		Args:   exactArgs(0, "no arguments"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := engine.ServeChild(os.Stdin, os.Stdout); err != nil {
 				return exitCode(exitError)
 			}
 			return exitCode(exitOK)
@@ -416,7 +418,12 @@ func (wallClock) AfterFunc(d time.Duration, f func()) func() bool {
 // says which stage failed.
 type systemProbe struct{}
 
-func (systemProbe) Probe(ctx context.Context, url string) error { return probe.System(ctx, url) }
+func (systemProbe) Probe(ctx context.Context, url string) error {
+	start := time.Now()
+	err := probe.System(ctx, url)
+	log.Printf("traffic check %s: %v", time.Since(start).Round(time.Millisecond), err)
+	return err
+}
 
 // diagnose runs after the tunnel's traffic check failed and the previous
 // state is back: it tries the node on its own over the same upstream the
@@ -445,11 +452,11 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	if err != nil {
 		return err
 	}
-	xrayCmd := engine.Command{Argv: []string{self, "service", "xray"}, WorkDir: filepath.Join(supportDir, "run")}
+	engines := engine.NewPool(engine.Command{Argv: []string{self, "service", "xray"}})
+	defer engines.Close()
 	tunnel := &system.Tunnel{
-		Run: system.Exec,
 		StartEngine: func(cfg []byte) (io.Closer, error) {
-			return engine.StartProcess(xrayCmd, cfg)
+			return engines.Start(cfg)
 		},
 		XrayLog:     filepath.Join(filepath.Dir(logPath), "xray.log"),
 		Lookup:      func(host string) ([]net.IP, error) { return net.LookupIP(host) },

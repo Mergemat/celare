@@ -66,37 +66,6 @@ func TestParseDNSServers(t *testing.T) {
 	}
 }
 
-// Half-default routes beat the real default without replacing it, so
-// taking the tunnel down only means deleting them.
-func TestUpAndDownCommands(t *testing.T) {
-	up := netconf.UpCommands("utun9", "Wi-Fi")
-	wantUp := [][]string{
-		{"route", "-n", "add", "-net", "0.0.0.0/1", "-interface", "utun9"},
-		{"route", "-n", "add", "-net", "128.0.0.0/1", "-interface", "utun9"},
-		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun9"},
-		{"route", "-n", "add", "-inet6", "-net", "8000::/1", "-interface", "utun9"},
-		{"networksetup", "-setdnsservers", "Wi-Fi", netconf.TunnelDNS},
-	}
-	if diff := cmp.Diff(wantUp, up); diff != "" {
-		t.Errorf("UpCommands mismatch (-want +got):\n%s", diff)
-	}
-	down := netconf.DownCommands("utun9", "Wi-Fi", nil)
-	wantDown := [][]string{
-		{"route", "-n", "delete", "-net", "0.0.0.0/1", "-interface", "utun9"},
-		{"route", "-n", "delete", "-net", "128.0.0.0/1", "-interface", "utun9"},
-		{"route", "-n", "delete", "-inet6", "-net", "::/1", "-interface", "utun9"},
-		{"route", "-n", "delete", "-inet6", "-net", "8000::/1", "-interface", "utun9"},
-		{"networksetup", "-setdnsservers", "Wi-Fi", "Empty"},
-	}
-	if diff := cmp.Diff(wantDown, down); diff != "" {
-		t.Errorf("DownCommands mismatch (-want +got):\n%s", diff)
-	}
-	restore := netconf.DownCommands("utun9", "Wi-Fi", []string{"1.1.1.1", "8.8.8.8"})
-	if diff := cmp.Diff([]string{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1", "8.8.8.8"}, restore[len(restore)-1]); diff != "" {
-		t.Errorf("DNS restore mismatch (-want +got):\n%s", diff)
-	}
-}
-
 func TestFreeTunName(t *testing.T) {
 	got := netconf.FreeTunName([]string{"lo0", "en0", "utun0", "utun1", "utun3", "utun100"})
 	if got != "utun101" {

@@ -82,7 +82,7 @@ func (a *app) doctorCmd() *cobra.Command {
 				}
 			}
 
-			t := &system.Tunnel{Run: system.Exec}
+			t := &system.Tunnel{}
 			ours := ""
 			if tunnelErr == nil && tunnel.System != nil {
 				ours = tunnel.System.Tun

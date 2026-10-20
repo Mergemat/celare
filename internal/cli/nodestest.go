@@ -45,7 +45,7 @@ and doesn't touch the running tunnel.`,
 			if t, err := a.client().Tunnel(cmd.Context()); err == nil && t.System != nil {
 				ours = t.System.Tun
 			}
-			up, err := (&system.Tunnel{Run: system.Exec}).Upstream(ours)
+			up, err := (&system.Tunnel{}).Upstream(ours)
 			if err != nil {
 				return failure("no_network", err.Error(), "connect Wi-Fi or Ethernet")
 			}
