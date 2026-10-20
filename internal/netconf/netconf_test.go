@@ -24,7 +24,7 @@ func TestPhysicalDefaultSkipsTunnels(t *testing.T) {
 	if !ok {
 		t.Fatal("found no physical default route")
 	}
-	want := netconf.Route{Gateway: "192.168.1.1", Interface: "en0"}
+	want := netconf.Route{Gateway: "192.168.1.1", Interface: "en0", Scoped: true}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("PhysicalDefault mismatch (-want +got):\n%s", diff)
 	}
@@ -120,5 +120,42 @@ const ncList = `Available network connection services in the current set (*=enab
 func TestConnectedVPNsByName(t *testing.T) {
 	if diff := cmp.Diff([]string{"V2BOX"}, netconf.ConnectedVPNs(ncList)); diff != "" {
 		t.Errorf("ConnectedVPNs mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// With V2Box connected its tunnel is the primary default route and en0's
+// default is scoped (the I flag). celare must go out through V2Box, the
+// way every other app's traffic does.
+const netstatV2BoxPrimary = `Internet:
+Destination        Gateway            Flags               Netif Expire
+default            link#30            UCSg                utun4
+default            192.168.1.1        UGScIg                en0
+0/1                utun9              UScg                utun9
+`
+
+func TestUpstreamFollowsTheSystemsPrimaryRoute(t *testing.T) {
+	routes := netconf.ParseDefaultRoutes(netstatV2BoxPrimary)
+	got, ok := netconf.Upstream(routes, "utun9")
+	if !ok || got.Interface != "utun4" {
+		t.Errorf("Upstream = %+v, %v; want utun4 (V2Box)", got, ok)
+	}
+	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(netstatWithOtherVPN), "")
+	if !ok || got.Interface != "utun4" {
+		t.Errorf("Upstream = %+v, %v; want utun4", got, ok)
+	}
+	plain := "Internet:\ndefault            192.168.1.1        UGScg                 en0\n"
+	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(plain), "")
+	if !ok || got.Interface != "en0" {
+		t.Errorf("Upstream = %+v, %v; want en0 when no other VPN is up", got, ok)
+	}
+}
+
+// celare's own tunnel never counts as the way out, even if it shows up
+// as a default route.
+func TestUpstreamSkipsCelaresOwnTunnel(t *testing.T) {
+	routes := netconf.ParseDefaultRoutes("Internet:\ndefault  link#40  UCSg  utun9\ndefault  192.168.1.1  UGScIg  en0\n")
+	got, ok := netconf.Upstream(routes, "utun9")
+	if !ok || got.Interface != "en0" {
+		t.Errorf("Upstream = %+v, %v; want en0", got, ok)
 	}
 }

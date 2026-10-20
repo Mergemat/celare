@@ -107,7 +107,7 @@ func TestStartRoutesIntoAFreshUtunAndBindsToWiFi(t *testing.T) {
 		{"route", "-n", "add", "-net", "128.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
-		{"networksetup", "-setdnsservers", "Wi-Fi", "198.18.0.53"},
+		{"networksetup", "-setdnsservers", "Wi-Fi", "169.254.10.1"},
 	}
 	if diff := cmp.Diff(want, r.ran); diff != "" {
 		t.Errorf("commands mismatch (-want +got):\n%s", diff)
@@ -234,29 +234,35 @@ func TestStartWithoutNetworkExplainsWhy(t *testing.T) {
 	}
 }
 
-// Two VPNs can't both own the default route; with another one up,
-// celare's traffic would be swallowed or loop. Refuse and say why.
-func TestStartRefusesWhileAnotherVPNHoldsTheDefaultRoute(t *testing.T) {
-	r := &fakeRunner{
-		netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n",
-		ncList:  "* (Connected)      2429CEEB VPN (hossin.asaadi.V2Box) \"V2BOX\"    [VPN:hossin.asaadi.V2Box]\n",
-	}
+// With V2Box connected, celare goes out through it like any other app:
+// no refusal, the server connection is bound to V2Box's tunnel, and DNS is
+// still saved and restored on the Wi-Fi service.
+func TestStartGoesOutThroughAnotherVPN(t *testing.T) {
+	r := &fakeRunner{netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n"}
 	e := &fakeEngine{}
 	tun, _ := newTunnel(t, r, e)
-	err := tun.Start(tokyo)
-	if err == nil || !strings.Contains(err.Error(), "V2BOX is connected") || !strings.Contains(err.Error(), `scutil --nc stop "V2BOX"`) {
-		t.Fatalf("err = %v, want a refusal naming V2BOX and how to turn it off", err)
+	var reachedVia string
+	tun.CanReach = func(_ string, _ int, iface string) error { reachedVia = iface; return nil }
+	if err := tun.Start(tokyo); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.ran) != 0 || len(e.configs) != 0 {
-		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))
+	if reachedVia != "utun4" {
+		t.Errorf("checked the server via %q, want utun4", reachedVia)
+	}
+	if !strings.Contains(e.configs[0], `"interface": "utun4"`) {
+		t.Errorf("outbounds not bound to utun4:\n%s", e.configs[0])
+	}
+	if last := r.ran[len(r.ran)-1]; strings.Join(last, " ") != "networksetup -setdnsservers Wi-Fi 169.254.10.1" {
+		t.Errorf("last command %v, want DNS set on Wi-Fi", last)
+	}
+	if tun.Interface() != "utun4" {
+		t.Errorf("Interface() = %q, want utun4", tun.Interface())
 	}
 }
 
-// Another VPN's firewall (Mullvad even while disconnected, V2Box) can
-// refuse traffic that leaves by Wi-Fi outside its own tunnel. celare's
-// connection to the server is exactly that, so it must find out before
-// touching routes and DNS, and say why.
-func TestStartFailsFastWhenTheServerCantBeReachedDirectly(t *testing.T) {
+// An unreachable server must be found before touching routes and DNS,
+// and the error must keep the cause.
+func TestStartFailsFastWhenTheServerIsUnreachable(t *testing.T) {
 	r := &fakeRunner{netstat: netstatOut}
 	e := &fakeEngine{}
 	tun, _ := newTunnel(t, r, e)
@@ -266,8 +272,8 @@ func TestStartFailsFastWhenTheServerCantBeReachedDirectly(t *testing.T) {
 		return errors.New("connect: connection refused")
 	}
 	err := tun.Start(tokyo)
-	if err == nil || !strings.Contains(err.Error(), "firewall") || !strings.Contains(err.Error(), "connection refused") {
-		t.Fatalf("err = %v, want it to blame a firewall and keep the cause", err)
+	if err == nil || !strings.Contains(err.Error(), "can't reach the server") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v, want it to say the server is unreachable and keep the cause", err)
 	}
 	if asked != "203.0.113.9:443 via en0" {
 		t.Errorf("checked %q, want the resolved server via en0", asked)

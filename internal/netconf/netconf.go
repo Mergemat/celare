@@ -10,14 +10,22 @@ import (
 )
 
 // TunnelDNS is the resolver address the system is pointed at while the
-// tunnel is up. It sits inside 128.0.0.0/1, so queries enter the tunnel,
-// where Xray answers everything on port 53 itself.
-const TunnelDNS = "198.18.0.53"
+// tunnel is up: Xray's end of the tunnel's point-to-point link (Xray
+// gives the Mac 169.254.10.2 and itself .1), so queries always enter
+// celare's tunnel, where Xray answers everything on port 53. It must stay
+// clear of 198.18.0.0/15, which VPN apps such as V2Box use for fake IPs.
+const TunnelDNS = "169.254.10.1"
+
+// LegacyTunnelDNS is what celare 0.1 set; doctor still recognises it.
+const LegacyTunnelDNS = "198.18.0.53"
 
 // Route is one IPv4 default route.
 type Route struct {
 	Gateway   string
 	Interface string
+	// Scoped routes (flag I) only serve sockets bound to their
+	// interface; the unscoped one is the system's primary.
+	Scoped bool
 }
 
 // Service is a macOS network service ("Wi-Fi") and its device ("en0").
@@ -35,7 +43,7 @@ func ParseDefaultRoutes(netstat string) []Route {
 		if len(f) < 4 || f[0] != "default" {
 			continue
 		}
-		out = append(out, Route{Gateway: f[1], Interface: f[3]})
+		out = append(out, Route{Gateway: f[1], Interface: f[3], Scoped: strings.Contains(f[2], "I")})
 	}
 	return out
 }
@@ -58,6 +66,27 @@ func PhysicalDefault(routes []Route) (Route, bool) {
 		if !isTunnel(r.Interface) && !strings.HasPrefix(r.Gateway, "link#") {
 			return r, true
 		}
+	}
+	return Route{}, false
+}
+
+// Upstream is the route celare's own traffic to its server takes: the
+// system's current primary default route, whichever interface that is
+// (Wi-Fi, Ethernet, or another VPN's tunnel), never celare's own tunnel.
+func Upstream(routes []Route, ours string) (Route, bool) {
+	var scoped []Route
+	for _, r := range routes {
+		if r.Interface == ours && ours != "" {
+			continue
+		}
+		if r.Scoped {
+			scoped = append(scoped, r)
+			continue
+		}
+		return r, true
+	}
+	if len(scoped) > 0 {
+		return scoped[0], true
 	}
 	return Route{}, false
 }

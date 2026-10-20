@@ -77,6 +77,20 @@ func (t *Tunnel) Physical() (route netconf.Route, service string, err error) {
 	return route, service, nil
 }
 
+// Upstream is the route celare's own traffic leaves by: the system's
+// primary default route other than celare's tunnel ours ("" when down).
+func (t *Tunnel) Upstream(ours string) (netconf.Route, error) {
+	out, err := t.Run("netstat", "-rn", "-f", "inet")
+	if err != nil {
+		return netconf.Route{}, fmt.Errorf("read routes: %w", err)
+	}
+	up, ok := netconf.Upstream(netconf.ParseDefaultRoutes(out), ours)
+	if !ok {
+		return netconf.Route{}, errors.New("no network: there is no default route; connect Wi-Fi or Ethernet first")
+	}
+	return up, nil
+}
+
 // ForeignTunnels lists other VPN interfaces holding a default route.
 func (t *Tunnel) ForeignTunnels() []string {
 	out, err := t.Run("netstat", "-rn", "-f", "inet")
@@ -95,7 +109,7 @@ func (t *Tunnel) ConnectedVPNs() []string {
 	return netconf.ConnectedVPNs(out)
 }
 
-// Interface is the physical interface the running tunnel is bound to.
+// Interface is the upstream interface the running tunnel is bound to.
 func (t *Tunnel) Interface() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -122,16 +136,16 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	if running {
 		return errors.New("tunnel already running")
 	}
-	route, service, err := t.Physical()
+	// DNS is set on the physical network service (Wi-Fi, Ethernet); the
+	// server connection leaves by the upstream, which is another VPN's
+	// tunnel when one is connected.
+	_, service, err := t.Physical()
 	if err != nil {
 		return err
 	}
-	if foreign := t.ForeignTunnels(); len(foreign) > 0 {
-		if names := t.ConnectedVPNs(); len(names) > 0 {
-			return fmt.Errorf("%s is connected, and its firewall blocks celare's connection to the server; turn it off first: `scutil --nc stop %q`",
-				strings.Join(names, " and "), names[0])
-		}
-		return fmt.Errorf("another VPN holds the default route (%s); turn it off first, two VPNs can't both route all traffic", strings.Join(foreign, ", "))
+	up, err := t.Upstream("")
+	if err != nil {
+		return err
 	}
 	dnsOut, err := t.Run("networksetup", "-getdnsservers", service)
 	if err != nil {
@@ -144,7 +158,7 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	sess := &session{
 		Tun:       netconf.FreeTunName(strings.Fields(ifaces)),
 		Service:   service,
-		Interface: route.Interface,
+		Interface: up.Interface,
 		SavedDNS:  netconf.ParseDNSServers(dnsOut),
 	}
 
@@ -153,9 +167,8 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		return err
 	}
 	if usesTCP(n) && t.CanReach != nil {
-		if err := t.CanReach(n.Address, n.Port, route.Interface); err != nil {
-			return fmt.Errorf("can't reach the server %s:%d directly over %s (%v). A VPN app's firewall is probably blocking traffic outside its own tunnel, even while that VPN looks disconnected (Mullvad, V2Box). Quit it and connect again",
-				n.Address, n.Port, route.Interface, err)
+		if err := t.CanReach(n.Address, n.Port, up.Interface); err != nil {
+			return fmt.Errorf("can't reach the server %s:%d over %s: %v", n.Address, n.Port, up.Interface, err)
 		}
 	}
 	dns := s.DNS
@@ -168,7 +181,7 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		Rules:         s.Rules,
 		DNS:           dns,
 		TUN:           &xrayconf.TUN{Name: sess.Tun, MTU: 1500},
-		BindInterface: route.Interface,
+		BindInterface: up.Interface,
 	})
 	if err != nil {
 		return err
