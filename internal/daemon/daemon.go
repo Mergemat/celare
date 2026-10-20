@@ -130,6 +130,9 @@ var (
 const (
 	keepChanges = 50
 	keepEvents  = 200
+	// probeTimeout bounds the traffic check; a working tunnel answers
+	// in a second or two, even through another VPN.
+	probeTimeout = 10 * time.Second
 )
 
 type Daemon struct {
@@ -214,7 +217,9 @@ func (d *Daemon) Apply(ctx context.Context, r Request) (Change, error) {
 		return *c, err
 	}
 	if r.Probe != "" {
-		pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		// The check runs to the end even if the caller hangs up: giving up
+		// early would revert a tunnel that works.
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), probeTimeout)
 		err := d.prober.Probe(pctx, r.Probe)
 		cancel()
 		if err != nil {

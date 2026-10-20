@@ -30,13 +30,6 @@ func TestPhysicalDefaultSkipsTunnels(t *testing.T) {
 	}
 }
 
-func TestTunnelOwningDefaultIsReported(t *testing.T) {
-	got := netconf.ForeignTunnels(netconf.ParseDefaultRoutes(netstatWithOtherVPN), "utun9")
-	if diff := cmp.Diff([]string{"utun4"}, got); diff != "" {
-		t.Errorf("ForeignTunnels mismatch (-want +got):\n%s", diff)
-	}
-}
-
 // Captured from `networksetup -listnetworkserviceorder`, trimmed.
 const serviceOrder = `An asterisk (*) denotes that a network service is disabled.
 (1) USB 10/100 LAN

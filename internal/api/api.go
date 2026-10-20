@@ -48,12 +48,6 @@ type SystemInfo struct {
 	// Interface is the physical interface the tunnel is bound to.
 	Interface string `json:"interface,omitempty"`
 	Tun       string `json:"tun,omitempty"`
-	// ForeignTunnels are other VPNs holding a default route; they
-	// compete with celare for traffic.
-	ForeignTunnels []string `json:"foreignTunnels,omitempty"`
-	// OtherVPNs names connected VPN apps ("V2BOX"); `scutil --nc stop
-	// <name>` turns one off.
-	OtherVPNs []string `json:"otherVPNs,omitempty"`
 }
 
 // Error is every failure the API returns. Code is stable; branch on it.

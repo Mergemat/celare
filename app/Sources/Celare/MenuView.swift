@@ -6,6 +6,7 @@ struct MenuView: View {
     var live = true
     @State private var adding = false
     @State private var input = ""
+    @State private var height: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,6 +23,9 @@ struct MenuView: View {
         }
         .padding(14)
         .frame(width: 284)
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        .background { if live { FitWindow(height: height) } }
         .onAppear { if live { model.start() } }
     }
 
@@ -125,7 +129,7 @@ struct MenuView: View {
         case .loading, .broken:
             EmptyView()
         case .needsService:
-            Button { Task { await model.installService() } } label: { Label("Install background service", systemImage: "lock.shield") }
+            Button { Task { await model.installService() } } label: { Label("Install background service", systemImage: "lock") }
                 .buttonStyle(PrimaryBarStyle())
                 .disabled(model.busy != nil)
         case .needsNodes:
@@ -279,6 +283,25 @@ struct MenuView: View {
         Button(action: action) { footerGlyph(symbol) }
             .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
             .help(help)
+    }
+}
+
+/// The menu bar window grows with its content but never shrinks back on
+/// its own; this keeps it the content's height, top edge under the bar.
+struct FitWindow: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard height > 0 else { return }
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            let content = window.contentRect(forFrameRect: window.frame)
+            guard abs(content.height - height) > 0.5 else { return }
+            let fitted = NSRect(x: content.minX, y: content.maxY - height, width: content.width, height: height)
+            window.setFrame(window.frameRect(forContentRect: fitted), display: true)
+        }
     }
 }
 

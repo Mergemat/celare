@@ -407,7 +407,7 @@ func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
 		if err != nil {
 			return err.Error()
 		}
-		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 10*time.Second, up.Interface)
+		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 6*time.Second, up.Interface)
 		if r.OK {
 			return fmt.Sprintf("%s works on its own over %s (%d ms), so traffic broke inside celare's tunnel; /Library/Logs/celare/xray.log has the details", spec.NodeName, up.Interface, r.LatencyMs)
 		}
@@ -447,7 +447,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 		ConfigDir: configDir,
 		StatePath: filepath.Join(supportDir, "state.json"),
 		System: func() *api.SystemInfo {
-			return &api.SystemInfo{Interface: tunnel.Interface(), Tun: tunnel.TunName(), ForeignTunnels: tunnel.ForeignTunnels(), OtherVPNs: tunnel.ConnectedVPNs()}
+			return &api.SystemInfo{Interface: tunnel.Interface(), Tun: tunnel.TunName()}
 		},
 	}
 	if err := srv.Resume(ctx); err != nil {

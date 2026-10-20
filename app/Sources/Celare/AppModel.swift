@@ -170,8 +170,9 @@ final class AppModel {
     func testNodes() async {
         busy = "Testing nodes…"
         defer { busy = nil }
-        if let results = try? await cli.run(["nodes", "test"], as: [TestResult].self) {
-            latency = Dictionary(results.map { ($0.node, $0) }, uniquingKeysWith: { a, _ in a })
+        struct Tests: Decodable, Sendable { let results: [TestResult] }
+        if let tests = try? await cli.run(["nodes", "test"], as: Tests.self) {
+            latency = Dictionary(tests.results.map { ($0.node, $0) }, uniquingKeysWith: { a, _ in a })
         }
     }
 

@@ -44,7 +44,7 @@ func TestConfigRoutingAndInterfaceBinding(t *testing.T) {
 			"listen": "127.0.0.1",
 			"port": 10808,
 			"settings": {"udp": true},
-			"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true}
+			"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false}
 		}],
 		"outbounds": [
 			{
@@ -91,7 +91,7 @@ func TestConfigTUNHijacksDNS(t *testing.T) {
 		"tag": "tun-in",
 		"protocol": "tun",
 		"settings": {"name": "utun9", "MTU": 1500},
-		"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true}
+		"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false}
 	}`
 	if diff := cmp.Diff([]any{decode(t, []byte(wantInbound))}, cfg.Inbounds); diff != "" {
 		t.Errorf("inbounds mismatch (-want +got):\n%s", diff)

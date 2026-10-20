@@ -50,7 +50,10 @@ type session struct {
 	Service   string   `json:"service"`
 	Interface string   `json:"interface"`
 	SavedDNS  []string `json:"savedDns"`
-	engine    io.Closer
+	// ScopedRoute deletes the upstream's scoped default route if celare
+	// added it.
+	ScopedRoute []string `json:"scopedRoute,omitempty"`
+	engine      io.Closer
 }
 
 // Exec runs a command for real.
@@ -59,13 +62,25 @@ func Exec(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// Physical reports the physical default route and its network service.
-func (t *Tunnel) Physical() (route netconf.Route, service string, err error) {
+func (t *Tunnel) routes() ([]netconf.Route, error) {
 	out, err := t.Run("netstat", "-rn", "-f", "inet")
 	if err != nil {
-		return netconf.Route{}, "", fmt.Errorf("read routes: %w", err)
+		return nil, fmt.Errorf("read routes: %w", err)
 	}
-	route, ok := netconf.PhysicalDefault(netconf.ParseDefaultRoutes(out))
+	return netconf.ParseDefaultRoutes(out), nil
+}
+
+// Physical reports the physical default route and its network service.
+func (t *Tunnel) Physical() (route netconf.Route, service string, err error) {
+	routes, err := t.routes()
+	if err != nil {
+		return netconf.Route{}, "", err
+	}
+	return t.physical(routes)
+}
+
+func (t *Tunnel) physical(routes []netconf.Route) (route netconf.Route, service string, err error) {
+	route, ok := netconf.PhysicalDefault(routes)
 	if !ok {
 		return netconf.Route{}, "", errors.New("no physical network: there is no default route through real hardware; connect Wi-Fi or Ethernet first")
 	}
@@ -83,33 +98,19 @@ func (t *Tunnel) Physical() (route netconf.Route, service string, err error) {
 // Upstream is the route celare's own traffic leaves by: the system's
 // primary default route other than celare's tunnel ours ("" when down).
 func (t *Tunnel) Upstream(ours string) (netconf.Route, error) {
-	out, err := t.Run("netstat", "-rn", "-f", "inet")
+	routes, err := t.routes()
 	if err != nil {
-		return netconf.Route{}, fmt.Errorf("read routes: %w", err)
+		return netconf.Route{}, err
 	}
-	up, ok := netconf.Upstream(netconf.ParseDefaultRoutes(out), ours)
+	return upstream(routes, ours)
+}
+
+func upstream(routes []netconf.Route, ours string) (netconf.Route, error) {
+	up, ok := netconf.Upstream(routes, ours)
 	if !ok {
 		return netconf.Route{}, errors.New("no network: there is no default route; connect Wi-Fi or Ethernet first")
 	}
 	return up, nil
-}
-
-// ForeignTunnels lists other VPN interfaces holding a default route.
-func (t *Tunnel) ForeignTunnels() []string {
-	out, err := t.Run("netstat", "-rn", "-f", "inet")
-	if err != nil {
-		return nil
-	}
-	return netconf.ForeignTunnels(netconf.ParseDefaultRoutes(out), t.TunName())
-}
-
-// ConnectedVPNs names the VPN apps connected right now ("V2BOX").
-func (t *Tunnel) ConnectedVPNs() []string {
-	out, err := t.Run("scutil", "--nc", "list")
-	if err != nil {
-		return nil
-	}
-	return netconf.ConnectedVPNs(out)
 }
 
 // Interface is the upstream interface the running tunnel is bound to.
@@ -142,11 +143,15 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	// DNS is set on the physical network service (Wi-Fi, Ethernet); the
 	// server connection leaves by the upstream, which is another VPN's
 	// tunnel when one is connected.
-	_, service, err := t.Physical()
+	routes, err := t.routes()
 	if err != nil {
 		return err
 	}
-	up, err := t.Upstream("")
+	_, service, err := t.physical(routes)
+	if err != nil {
+		return err
+	}
+	up, err := upstream(routes, "")
 	if err != nil {
 		return err
 	}
@@ -163,6 +168,9 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		Service:   service,
 		Interface: up.Interface,
 		SavedDNS:  netconf.ParseDNSServers(dnsOut),
+	}
+	if !netconf.HasScopedDefault(routes, up.Interface) {
+		sess.ScopedRoute = netconf.ScopedDefault("delete", up)
 	}
 
 	n, err := t.pinAddress(s.Node)
@@ -201,10 +209,22 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		sess.engine.Close()
 		return fmt.Errorf("write restore file: %w", err)
 	}
-	for _, cmd := range netconf.UpCommands(sess.Tun, sess.Service) {
+	cmds := netconf.UpCommands(sess.Tun, sess.Service)
+	if sess.ScopedRoute != nil {
+		cmds = append([][]string{netconf.ScopedDefault("add", up)}, cmds...)
+	}
+	for _, cmd := range cmds {
 		if out, err := t.Run(cmd[0], cmd[1:]...); err != nil {
 			t.undo(sess)
 			return fmt.Errorf("%s: %s (%w); changes undone", strings.Join(cmd, " "), strings.TrimSpace(out), err)
+		}
+	}
+	// With the tunnel's routes in place, the server must still be
+	// reachable the way Xray dials it, or every connection would fail.
+	if usesTCP(n) && t.CanReach != nil {
+		if err := t.CanReach(n.Address, n.Port, up.Interface); err != nil {
+			t.undo(sess)
+			return fmt.Errorf("the server %s:%d stopped answering over %s once traffic was routed into the tunnel: %v; changes undone", n.Address, n.Port, up.Interface, err)
 		}
 	}
 	t.mu.Lock()
@@ -245,7 +265,12 @@ func (t *Tunnel) Recover() error {
 // is the one that leaves the machine offline.
 func (t *Tunnel) undo(s *session) error {
 	var dnsErr error
-	for _, cmd := range netconf.DownCommands(s.Tun, s.Service, s.SavedDNS) {
+	cmds := netconf.DownCommands(s.Tun, s.Service, s.SavedDNS)
+	if s.ScopedRoute != nil {
+		// Before the DNS restore, which stays last.
+		cmds = slices.Insert(cmds, len(cmds)-1, s.ScopedRoute)
+	}
+	for _, cmd := range cmds {
 		out, err := t.Run(cmd[0], cmd[1:]...)
 		if err != nil && cmd[0] == "networksetup" {
 			dnsErr = fmt.Errorf("restore DNS of %s: %s (%w)", s.Service, strings.TrimSpace(out), err)

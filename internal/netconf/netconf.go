@@ -91,17 +91,28 @@ func Upstream(routes []Route, ours string) (Route, bool) {
 	return Route{}, false
 }
 
-// ForeignTunnels lists tunnel interfaces other than ours that hold a
-// default route; another VPN running alongside celare fights it for
-// traffic.
-func ForeignTunnels(routes []Route, ours string) []string {
-	var out []string
+// HasScopedDefault reports whether iface already has its own scoped
+// default route; macOS adds one for every network service but the primary.
+func HasScopedDefault(routes []Route, iface string) bool {
 	for _, r := range routes {
-		if isTunnel(r.Interface) && r.Interface != ours {
-			out = append(out, r.Interface)
+		if r.Scoped && r.Interface == iface {
+			return true
 		}
 	}
-	return out
+	return false
+}
+
+// ScopedDefault is the route command (op "add" or "delete") for a default
+// route scoped to up's interface. Xray's outbounds are bound to that
+// interface (IP_BOUND_IF), so their lookups only accept routes through
+// it; the primary interface has no scoped default, so once the tunnel's
+// half-default routes are in, they would be sent back into the tunnel.
+func ScopedDefault(op string, up Route) []string {
+	cmd := []string{"route", "-n", op, "-ifscope", up.Interface, "default"}
+	if strings.HasPrefix(up.Gateway, "link#") {
+		return append(cmd, "-interface", up.Interface)
+	}
+	return append(cmd, up.Gateway)
 }
 
 var (

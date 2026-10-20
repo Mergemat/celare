@@ -69,8 +69,9 @@ type inbound struct {
 type sniffing struct {
 	Enabled      bool     `json:"enabled"`
 	DestOverride []string `json:"destOverride"`
-	// RouteOnly routes by the sniffed domain but still connects to the
-	// original IP, so DNS answers stay authoritative.
+	// RouteOnly false sends the sniffed domain to the server instead of
+	// the IP the app dialed: an app that looked it up through another VPN
+	// (V2Box) holds a fake 198.18.x address only that VPN understands.
 	RouteOnly bool `json:"routeOnly"`
 }
 
@@ -89,7 +90,7 @@ type routingRule struct {
 	OutboundTag string   `json:"outboundTag"`
 }
 
-var defaultSniffing = sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}, RouteOnly: true}
+var defaultSniffing = sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}}
 
 // Config renders a complete Xray JSON config for the plan.
 func Config(p Plan) ([]byte, error) {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,6 +104,7 @@ func TestStartRoutesIntoAFreshUtunAndBindsToWiFi(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
+		{"route", "-n", "add", "-ifscope", "en0", "default", "192.168.1.1"},
 		{"route", "-n", "add", "-net", "0.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-net", "128.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun5"},
@@ -170,6 +172,7 @@ func TestStopRestoresDNSAndRemovesRoutes(t *testing.T) {
 		{"route", "-n", "delete", "-net", "128.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "delete", "-inet6", "-net", "::/1", "-interface", "utun5"},
 		{"route", "-n", "delete", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
+		{"route", "-n", "delete", "-ifscope", "en0", "default", "192.168.1.1"},
 		{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1"},
 	}
 	if diff := cmp.Diff(want, r.ran); diff != "" {
@@ -217,8 +220,8 @@ func TestRecoverUndoesACrashedSession(t *testing.T) {
 	if err := fresh.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.ran) != 5 || r.ran[4][len(r.ran[4])-1] != "1.1.1.1" {
-		t.Errorf("recover ran %v, want the four route deletes and the DNS restore", r.ran)
+	if len(r.ran) != 6 || r.ran[5][len(r.ran[5])-1] != "1.1.1.1" {
+		t.Errorf("recover ran %v, want the five route deletes and the DNS restore", r.ran)
 	}
 	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("restore file still present after recover: %v", err)
@@ -257,6 +260,56 @@ func TestStartGoesOutThroughAnotherVPN(t *testing.T) {
 	}
 	if tun.Interface() != "utun4" {
 		t.Errorf("Interface() = %q, want utun4", tun.Interface())
+	}
+	// Without a default scoped to utun4, Xray's bound connections would
+	// follow the tunnel's own routes back into it.
+	if first := strings.Join(r.ran[0], " "); first != "route -n add -ifscope utun4 default -interface utun4" {
+		t.Errorf("first command %q, want a default route scoped to utun4", first)
+	}
+}
+
+// macOS's own scoped default is used as it is and left in place on stop.
+func TestStartKeepsAnExistingScopedDefault(t *testing.T) {
+	r := &fakeRunner{netstat: netstatOut + "default            192.168.1.1        UGScIg                en0\n"}
+	tun, _ := newTunnel(t, r, &fakeEngine{})
+	if err := tun.Start(tokyo); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range r.ran {
+		if slices.Contains(cmd, "-ifscope") {
+			t.Errorf("touched the system's scoped default: %v", cmd)
+		}
+	}
+}
+
+// A server that only fails once the routes are in must not leave the
+// machine routed into a dead tunnel.
+func TestStartUndoesWhenTheServerStopsAnsweringOnceRouted(t *testing.T) {
+	r := &fakeRunner{netstat: netstatOut}
+	e := &fakeEngine{}
+	tun, restore := newTunnel(t, r, e)
+	checks := 0
+	tun.CanReach = func(string, int, string) error {
+		if checks++; checks > 1 {
+			return errors.New("i/o timeout")
+		}
+		return nil
+	}
+	err := tun.Start(tokyo)
+	if err == nil || !strings.Contains(err.Error(), "once traffic was routed into the tunnel") {
+		t.Fatalf("err = %v, want the post-route reach failure", err)
+	}
+	if last := strings.Join(r.ran[len(r.ran)-1], " "); last != "networksetup -setdnsservers Wi-Fi 1.1.1.1" {
+		t.Errorf("last command %q, want DNS restored", last)
+	}
+	if e.closed != 1 || tun.Interface() != "" {
+		t.Errorf("engine closed %d times, interface %q; want it stopped", e.closed, tun.Interface())
+	}
+	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("restore file left behind: %v", err)
 	}
 }
 

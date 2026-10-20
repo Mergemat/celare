@@ -48,10 +48,6 @@ func printTunnel(w io.Writer, t api.Tunnel) {
 		fmt.Fprintf(w, "pending %s: %s; reverts to %s at %s unless confirmed\n",
 			p.ID, p.Action, endpointName(p.From), p.Deadline.Local().Format("15:04:05"))
 	}
-	if t.System != nil && len(t.System.ForeignTunnels) > 0 {
-		fmt.Fprintf(w, "warning: another VPN holds the default route (%s); turn it off or traffic may bypass celare\n",
-			strings.Join(t.System.ForeignTunnels, ", "))
-	}
 }
 
 func endpointName(e *daemon.Endpoint) string {
