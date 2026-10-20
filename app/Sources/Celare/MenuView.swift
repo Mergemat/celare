@@ -229,6 +229,7 @@ struct MenuView: View {
             ForEach(model.nodes) { node in
                 NodeRow(node: node,
                         active: isUp && model.tunnel?.node == node.name,
+                        testing: model.testingNodes.contains(node.name),
                         result: model.latency[node.name]) {
                     Task { await model.connect(node.name) }
                 }
@@ -245,6 +246,7 @@ struct MenuView: View {
                 footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add a subscription or node") { adding.toggle() }
                 footerIcon("arrow.clockwise", help: "Update subscriptions") { Task { await model.updateSubscriptions() } }
                 footerIcon("gauge.with.needle", help: "Measure every node") { Task { await model.testNodes() } }
+                    .disabled(!model.testingNodes.isEmpty)
             }
             Spacer()
             if live {
@@ -325,6 +327,7 @@ struct NodeName: View {
 struct NodeRow: View {
     let node: NodeView
     let active: Bool
+    let testing: Bool
     let result: TestResult?
     let action: () -> Void
 
@@ -337,15 +340,17 @@ struct NodeRow: View {
                 NodeName(name: node.name)
                 Spacer(minLength: 6)
                 Text(trailing).font(.mono).foregroundStyle(failed ? AnyShapeStyle(Color.red.opacity(0.85)) : AnyShapeStyle(.secondary))
+                    .help(result?.error ?? "Response time through this node")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(HoverRaiseStyle(radius: 7, horizontal: 8, vertical: 6))
     }
 
-    private var failed: Bool { result.map { !$0.ok } ?? false }
+    private var failed: Bool { !testing && (result.map { !$0.ok } ?? false) }
 
     private var trailing: String {
+        if testing { return "testing…" }
         guard let result else { return node.protocol }
         return result.ok ? "\(result.latencyMs ?? 0) ms" : "failed"
     }

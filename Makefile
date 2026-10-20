@@ -17,7 +17,7 @@ APP     := $(DIST)/Celare.app
 
 test:
 	go test ./...
-	cd app && swift build
+	cd app && swift test
 
 cli:
 	@mkdir -p $(DIST)

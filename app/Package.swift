@@ -5,6 +5,7 @@ let package = Package(
     name: "Celare",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "Celare", path: "Sources/Celare")
+        .executableTarget(name: "Celare", path: "Sources/Celare"),
+        .testTarget(name: "CelareTests", dependencies: ["Celare"])
     ]
 )

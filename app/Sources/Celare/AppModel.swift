@@ -24,6 +24,7 @@ final class AppModel {
     var nodesLoaded = false
     var serviceMissing = false
     var latency: [String: TestResult] = [:]
+    var testingNodes: Set<String> = []
     var busy: String?
     /// The node a connect is in progress for, shown while it runs.
     var connecting: String?
@@ -168,11 +169,13 @@ final class AppModel {
     func revert(_ id: String) async { await perform("Reverting…", ["revert", id]) }
 
     func testNodes() async {
-        busy = "Testing nodes…"
-        defer { busy = nil }
-        struct Tests: Decodable, Sendable { let results: [TestResult] }
-        if let tests = try? await cli.run(["nodes", "test"], as: Tests.self) {
-            latency = Dictionary(tests.results.map { ($0.node, $0) }, uniquingKeysWith: { a, _ in a })
+        guard busy == nil, testingNodes.isEmpty else { return }
+        let names = nodes.map(\.name)
+        testingNodes = Set(names)
+        defer { testingNodes = [] }
+        await cli.testNodes(names) { [weak self] result in
+            self?.latency[result.node] = result
+            self?.testingNodes.remove(result.node)
         }
     }
 

@@ -90,7 +90,7 @@ and doesn't touch the running tunnel.`,
 		},
 	}
 	cmd.Flags().StringVar(&target, "url", probe.DefaultURL, "URL to fetch through each node")
-	cmd.Flags().DurationVar(&timeout, "timeout", 8*time.Second, "give up on a node after this long")
+	cmd.Flags().DurationVar(&timeout, "timeout", 3*time.Second, "give up on a node after this long")
 	return cmd
 }
 
