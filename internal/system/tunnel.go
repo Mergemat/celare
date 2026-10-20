@@ -31,6 +31,9 @@ type Tunnel struct {
 	StartEngine func(configJSON []byte) (io.Closer, error)
 	// Lookup resolves the server's domain before DNS moves into the tunnel.
 	Lookup func(host string) ([]net.IP, error)
+	// XrayLog, if set, is where the tunnel's Xray logs at info level,
+	// truncated at each start.
+	XrayLog string
 	// CanReach opens a TCP connection to host:port bound to iface, the way
 	// Xray will reach the server once the tunnel is up.
 	CanReach    func(host string, port int, iface string) error
@@ -182,9 +185,14 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		DNS:           dns,
 		TUN:           &xrayconf.TUN{Name: sess.Tun, MTU: 1500},
 		BindInterface: up.Interface,
+		LogLevel:      logLevel(t.XrayLog),
+		LogFile:       t.XrayLog,
 	})
 	if err != nil {
 		return err
+	}
+	if t.XrayLog != "" {
+		os.WriteFile(t.XrayLog, nil, 0o644)
 	}
 	if sess.engine, err = t.StartEngine(cfg); err != nil {
 		return err
@@ -295,6 +303,13 @@ func (t *Tunnel) pinAddress(n node.Node) (node.Node, error) {
 		}
 	}
 	return n, nil
+}
+
+func logLevel(file string) string {
+	if file == "" {
+		return ""
+	}
+	return "info"
 }
 
 // usesTCP reports whether Xray reaches the server over TCP, which is what

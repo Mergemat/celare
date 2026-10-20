@@ -47,7 +47,7 @@ and changing routes and DNS need it. It listens on /var/run/celare.sock,
 which only the user who installed it can open, so celare itself never
 needs your password again after 'celare service install'.`,
 	}
-	cmd.AddCommand(a.serviceInstallCmd(), a.serviceUninstallCmd(), a.serviceStatusCmd(), a.serviceRunCmd())
+	cmd.AddCommand(a.serviceInstallCmd(), a.serviceUninstallCmd(), a.serviceStatusCmd(), a.serviceRunCmd(), a.serviceXrayCmd())
 	return cmd
 }
 
@@ -369,6 +369,23 @@ func (a *app) serviceRunCmd() *cobra.Command {
 	return cmd
 }
 
+// serviceXrayCmd is the child process the daemon runs each tunnel's Xray
+// in, so stopping a tunnel ends a process and releases its utun.
+func (a *app) serviceXrayCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "xray <config>",
+		Short:  "Run one tunnel's Xray (the daemon starts this)",
+		Hidden: true,
+		Args:   exactArgs(1, "a config file"),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := engine.ServeChild(args[0], os.Stdin, os.Stdout); err != nil {
+				return exitCode(exitError)
+			}
+			return exitCode(exitOK)
+		},
+	}
+}
+
 type wallClock struct{}
 
 func (wallClock) Now() time.Time { return time.Now() }
@@ -410,25 +427,23 @@ func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
 	}
 }
 
-type engineCloser struct{ e *engine.Engine }
-
-func (c engineCloser) Close() error { return c.e.Close() }
-
 func runDaemon(ctx context.Context, configDir string, owner int, socket string) error {
 	log.SetFlags(log.LstdFlags)
 	os.MkdirAll(supportDir, 0o755)
 	// geoip:/geosite: rules read their lists from here.
 	os.Setenv("XRAY_LOCATION_ASSET", filepath.Join(configDir, "geo"))
 
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	xrayCmd := engine.Command{Argv: []string{self, "service", "xray"}, WorkDir: filepath.Join(supportDir, "run")}
 	tunnel := &system.Tunnel{
 		Run: system.Exec,
 		StartEngine: func(cfg []byte) (io.Closer, error) {
-			e, err := engine.Start(cfg)
-			if err != nil {
-				return nil, err
-			}
-			return engineCloser{e}, nil
+			return engine.StartProcess(xrayCmd, cfg)
 		},
+		XrayLog:     filepath.Join(filepath.Dir(logPath), "xray.log"),
 		Lookup:      func(host string) ([]net.IP, error) { return net.LookupIP(host) },
 		CanReach:    system.DialBound,
 		RestorePath: filepath.Join(supportDir, "restore.json"),

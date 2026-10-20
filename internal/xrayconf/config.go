@@ -24,6 +24,9 @@ type Plan struct {
 	// LogLevel is Xray's log level; "" means warning. Xray logs to
 	// stdout, so commands printing JSON there use "none".
 	LogLevel string
+	// LogFile, if set, receives Xray's log instead of stdout; per-connection
+	// access lines are then left out.
+	LogFile string
 }
 
 type TUN struct {
@@ -107,8 +110,13 @@ func Config(p Plan) ([]byte, error) {
 	if logLevel == "" {
 		logLevel = "warning"
 	}
+	logCfg := map[string]string{"loglevel": logLevel}
+	if p.LogFile != "" {
+		logCfg["error"] = p.LogFile
+		logCfg["access"] = "none"
+	}
 	cfg := xrayConfig{
-		Log: map[string]string{"loglevel": logLevel},
+		Log: logCfg,
 		Outbounds: []OutboundObject{
 			proxy,
 			direct,

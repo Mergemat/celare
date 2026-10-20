@@ -116,3 +116,17 @@ func renderConfig(t *testing.T, p xrayconf.Plan) []byte {
 	}
 	return got
 }
+
+// The daemon's Xray logs to a file at info level without access lines,
+// so socket and outbound failures are on record without per-connection noise.
+func TestConfigLogFile(t *testing.T) {
+	got := renderConfig(t, xrayconf.Plan{Node: plainVLESS, Default: config.Proxy, LogLevel: "info", LogFile: "/tmp/x.log"})
+	var cfg struct {
+		Log map[string]string `json:"log"`
+	}
+	mustUnmarshal(t, got, &cfg)
+	want := map[string]string{"loglevel": "info", "error": "/tmp/x.log", "access": "none"}
+	if diff := cmp.Diff(want, cfg.Log); diff != "" {
+		t.Errorf("log mismatch (-want +got):\n%s", diff)
+	}
+}
