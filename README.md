@@ -1,6 +1,6 @@
 # celare
 
-A macOS VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard, built so an agent can run it without touching the screen.
+A macOS VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard, built so an agent can run it without touching the screen. [celare.omarov.sh](https://celare.omarov.sh)
 
 - **Protocols:** VLESS (REALITY, Vision, XHTTP), VMess, Trojan, Shadowsocks (including 2022), Hysteria2 (salamander, port hopping), WireGuard. Transports: raw, XHTTP, WebSocket, gRPC, HTTPUpgrade, mKCP, Finalmask. Each one is tested end to end against a real Xray server.
 - **Engine:** xray-core 26.3.27, linked in. There's no separate core process.
@@ -60,9 +60,10 @@ mkdir -p ~/.claude/skills/celare && celare skill > ~/.claude/skills/celare/SKILL
 make test       # Go tests (none need root) and the app build
 make run        # build dist/Celare.app and open it
 make release    # the release zip, CLI tarball and checksums, as CI builds them
+make site       # deploy site/ to celare.omarov.sh (Vercel)
 ```
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and, updates the formula in `Mergemat/homebrew-tap` using the `HOMEBREW_TAP_DEPLOY_KEY` secret.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it publishes the release and updates the cask in `Mergemat/homebrew-tap` using the `HOMEBREW_TAP_DEPLOY_KEY` secret.
 
 With the tunnel up, `celare doctor` checks that it carries traffic and shows the exit IP.
 

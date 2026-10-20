@@ -5,13 +5,14 @@
 #   make app       dist/Celare.app, with the CLI inside
 #   make release   dist/Celare-<version>.zip, dist/celare-<version>-darwin.tar.gz, checksums
 #   make run       build the app and open it
+#   make site      deploy site/ to celare.omarov.sh
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 LDFLAGS := -s -w -X github.com/Mergemat/celare/internal/cli.Version=$(VERSION)
 DIST    := dist
 APP     := $(DIST)/Celare.app
 
-.PHONY: test cli app release run clean
+.PHONY: test cli app release run site clean
 
 test:
 	go test ./...
@@ -41,6 +42,9 @@ release: app
 
 run: app
 	open $(APP)
+
+site:
+	cd site && vercel deploy --prod --yes
 
 clean:
 	rm -rf $(DIST) app/.build
