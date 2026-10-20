@@ -51,6 +51,7 @@ struct PrimaryBarStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .labelStyle(BarLabelStyle())
             .font(.system(size: 12.5, weight: .semibold))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
@@ -109,4 +110,14 @@ struct HoverRaiseStyle: ButtonStyle {
 
 extension Font {
     static let mono = Font.system(size: 10.5, weight: .regular, design: .monospaced)
+}
+
+/// Icon and title for the primary bar, the icon a touch lighter.
+struct BarLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.font(.system(size: 11.5, weight: .bold)).opacity(0.9)
+            configuration.title
+        }
+    }
 }

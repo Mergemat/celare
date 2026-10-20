@@ -29,6 +29,9 @@ struct MenuView: View {
 
     private var topLine: some View {
         HStack(spacing: 6) {
+            Image(systemName: isUp ? "shield.lefthalf.filled" : "shield")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isUp ? AnyShapeStyle(Palette.blueDot) : AnyShapeStyle(.secondary))
             Text("celare").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
             Spacer()
             Circle().fill(stateColor).frame(width: 6, height: 6)
@@ -110,7 +113,7 @@ struct MenuView: View {
         case .loading, .broken:
             EmptyView()
         case .needsService:
-            Button("Install background service") { Task { await model.installService() } }
+            Button { Task { await model.installService() } } label: { Label("Install background service", systemImage: "lock.shield") }
                 .buttonStyle(PrimaryBarStyle())
                 .disabled(model.busy != nil)
         case .needsNodes:
@@ -119,11 +122,11 @@ struct MenuView: View {
             if let pending = model.tunnel?.pending {
                 PendingBar(change: pending, model: model)
             } else if isUp {
-                Button("Disconnect") { Task { await model.disconnect() } }
+                Button { Task { await model.disconnect() } } label: { Label("Disconnect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(model.busy != nil)
             } else {
-                Button("Connect") { Task { await model.connect(nil) } }
+                Button { Task { await model.connect(nil) } } label: { Label("Connect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(model.busy != nil)
             }
@@ -150,7 +153,7 @@ struct MenuView: View {
                 .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
                 .onSubmit(submit)
             if prominent {
-                Button("Add", action: submit)
+                Button(action: submit) { Label("Add", systemImage: "plus") }
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || model.busy != nil)
             }
@@ -215,36 +218,47 @@ struct MenuView: View {
     private var footer: some View {
         HStack(spacing: 2) {
             if model.phase == .ready {
-                footerButton(adding ? "Cancel" : "Add") { adding.toggle() }
-                footerButton("Update") { Task { await model.updateSubscriptions() } }
-                footerButton("Test") { Task { await model.testNodes() } }
+                footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add a subscription or node") { adding.toggle() }
+                footerIcon("arrow.clockwise", help: "Update subscriptions") { Task { await model.updateSubscriptions() } }
+                footerIcon("gauge.with.needle", help: "Measure every node") { Task { await model.testNodes() } }
             }
             Spacer()
-            Menu {
-                Button("Open config.toml") { Task { await model.openConfig() } }
-                Button("Copy CLI path") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
+            if live {
+                Menu {
+                    Button("Open config.toml") { Task { await model.openConfig() } }
+                    Button("Copy CLI path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
+                    }
+                    Divider()
+                    Button("Quit celare") { NSApplication.shared.terminate(nil) }
+                } label: {
+                    footerGlyph("ellipsis")
                 }
-                Divider()
-                Button("Quit celare") { NSApplication.shared.terminate(nil) }
-            } label: {
-                Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More")
+            } else {
+                // ImageRenderer can't draw an AppKit menu; show its icon.
+                footerGlyph("ellipsis").padding(.horizontal, 7).padding(.vertical, 5)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .padding(.horizontal, 6)
         }
-        .padding(.horizontal, -8)
+        .padding(.horizontal, -7)
         .disabled(model.busy != nil)
     }
 
-    private func footerButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .font(.system(size: 11.5, weight: .medium))
+    private func footerGlyph(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(.secondary)
-            .buttonStyle(HoverRaiseStyle())
+            .frame(width: 16, height: 16)
+    }
+
+    private func footerIcon(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { footerGlyph(symbol) }
+            .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
+            .help(help)
     }
 }
 
