@@ -6,7 +6,7 @@ cask "celare" do
 
   url "https://github.com/Mergemat/celare/releases/download/v#{version}/Celare-#{version}.zip"
   name "celare"
-  desc "Agent-friendly VPN client for every protocol 3x-ui serves"
+  desc "Agent-friendly VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard"
   homepage "https://github.com/Mergemat/celare"
 
   depends_on macos: :sonoma

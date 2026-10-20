@@ -70,7 +70,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 func (a *app) root() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "celare",
-		Short: "A VPN client for every protocol 3x-ui serves, built for agents",
+		Short: "A VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard, built for agents",
 		Long: `celare routes your Mac's traffic through VLESS, VMess, Trojan, Shadowsocks,
 Hysteria2 or WireGuard nodes, with per-domain and per-IP rules.
 

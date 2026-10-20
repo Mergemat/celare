@@ -1,6 +1,6 @@
 # celare
 
-A macOS VPN client for every protocol [3x-ui](https://github.com/MHSanaei/3x-ui) serves, built so an agent can run it without touching the screen.
+A macOS VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard, built so an agent can run it without touching the screen.
 
 - **Protocols:** VLESS (REALITY, Vision, XHTTP), VMess, Trojan, Shadowsocks (including 2022), Hysteria2 (salamander, port hopping), WireGuard. Transports: raw, XHTTP, WebSocket, gRPC, HTTPUpgrade, mKCP, Finalmask. Each one is tested end to end against a real Xray server.
 - **Engine:** xray-core 26.3.27, linked in. There's no separate core process.
