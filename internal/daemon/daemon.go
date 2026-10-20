@@ -123,7 +123,7 @@ var (
 	ErrNothingPending = errors.New("no change is pending")
 	ErrNotPending     = errors.New("change is not pending")
 	ErrNotFound       = errors.New("no such change")
-	ErrProbeFailed    = errors.New("probe failed")
+	ErrProbeFailed    = errors.New("traffic check failed")
 	ErrStartFailed    = errors.New("tunnel failed to start")
 )
 
@@ -218,10 +218,10 @@ func (d *Daemon) Apply(ctx context.Context, r Request) (Change, error) {
 		err := d.prober.Probe(pctx, r.Probe)
 		cancel()
 		if err != nil {
-			reason := fmt.Sprintf("%s through %s: %v", r.Probe, describe(r.Spec), err)
+			reason := fmt.Sprintf("nothing got through %s (%v, fetching %s)", describe(r.Spec), err, r.Probe)
 			restoreErr := d.switchTo(r.Spec, previous)
-			c.State, c.Reason = Reverted, "probe failed: "+reason
-			d.settle(c, "change.reverted", fmt.Sprintf("%s reverted to %s: probe failed: %s", c.ID, describe(previous), reason))
+			c.State, c.Reason = Reverted, "traffic check failed: "+reason
+			d.settle(c, "change.reverted", fmt.Sprintf("%s reverted to %s: traffic check failed: %s", c.ID, describe(previous), reason))
 			return *c, errors.Join(fmt.Errorf("%w: %s; reverted to %s", ErrProbeFailed, reason, describe(previous)), restoreErr)
 		}
 	}

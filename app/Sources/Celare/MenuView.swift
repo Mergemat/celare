@@ -42,6 +42,7 @@ struct MenuView: View {
     private var isUp: Bool { model.tunnel?.isUp == true }
 
     private var stateLabel: String {
+        if model.connecting != nil { return "Connecting" }
         if let busy = model.busy { return busy }
         switch model.phase {
         case .loading: return "Checking"
@@ -54,6 +55,7 @@ struct MenuView: View {
     }
 
     private var stateColor: Color {
+        if model.connecting != nil { return .orange }
         switch model.phase {
         case .broken: return .red
         case .needsService: return .orange
@@ -85,7 +87,11 @@ struct MenuView: View {
                     .font(.system(size: 11.5)).foregroundStyle(.secondary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             case .ready:
-                if let t = model.tunnel, t.isUp, let name = t.node {
+                if let name = model.connecting {
+                    NodeName(name: name, size: 17)
+                    Text("Checking that traffic gets through…")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                } else if let t = model.tunnel, t.isUp, let name = t.node {
                     NodeName(name: name, size: 17)
                     Text(detail(for: name)).font(.mono).foregroundStyle(.secondary)
                 } else {
@@ -125,7 +131,16 @@ struct MenuView: View {
         case .needsNodes:
             addField(prominent: true)
         case .ready:
-            if let pending = model.tunnel?.pending {
+            if model.connecting != nil {
+                Button {} label: {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small).tint(.white)
+                        Text("Connecting…")
+                    }
+                }
+                .buttonStyle(PrimaryBarStyle())
+                .allowsHitTesting(false)
+            } else if let pending = model.tunnel?.pending {
                 PendingBar(change: pending, model: model)
             } else if isUp {
                 Button { Task { await model.disconnect() } } label: { Label("Disconnect", systemImage: "power") }

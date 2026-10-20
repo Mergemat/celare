@@ -30,6 +30,9 @@ type Server struct {
 	System func() *SystemInfo
 	// Version is reported in GET /v1/tunnel.
 	Version string
+	// Diagnose, if set, explains a failed traffic check: it tests the
+	// node outside the tunnel to tell a blocked server from a tunnel fault.
+	Diagnose func(ctx context.Context, spec *daemon.Spec) string
 
 	mu       sync.Mutex
 	lastNode string
@@ -198,6 +201,9 @@ func (s *Server) createChange(w http.ResponseWriter, r *http.Request) {
 		e := daemonError(err)
 		if c.ID != "" {
 			e.Change = &c
+		}
+		if errors.Is(err, daemon.ErrProbeFailed) && s.Diagnose != nil && spec != nil {
+			e.Hint = s.Diagnose(r.Context(), spec)
 		}
 		fail(w, e)
 		return

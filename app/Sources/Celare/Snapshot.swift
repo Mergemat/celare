@@ -46,6 +46,11 @@ enum Snapshot {
         switch scenario {
         case "setup":
             model.serviceMissing = true
+        case "connecting":
+            model.tunnel = tunnel(up: false)
+            model.nodes = nodes
+            model.connecting = "main/Osaka"
+            model.busy = "Connecting…"
         case "empty":
             model.tunnel = tunnel(up: false)
         case "down":

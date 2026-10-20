@@ -21,6 +21,7 @@ import (
 	"github.com/Mergemat/celare/internal/api"
 	"github.com/Mergemat/celare/internal/daemon"
 	"github.com/Mergemat/celare/internal/engine"
+	"github.com/Mergemat/celare/internal/probe"
 	"github.com/Mergemat/celare/internal/system"
 	"github.com/spf13/cobra"
 )
@@ -385,10 +386,28 @@ func (httpProbe) Probe(ctx context.Context, url string) error {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		// The daemon gives the check 15 seconds.
+		return errors.New(probe.Explain(err, 15*time.Second))
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// diagnose runs after the tunnel's traffic check failed and the previous
+// state is back: it tries the node directly over the physical interface,
+// the way the tunnel reaches it.
+func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
+	return func(ctx context.Context, spec *daemon.Spec) string {
+		route, _, err := t.Physical()
+		if err != nil {
+			return err.Error()
+		}
+		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 10*time.Second, route.Interface)
+		if r.OK {
+			return fmt.Sprintf("%s works on its own over %s (%d ms), so traffic broke inside celare's tunnel. Run `celare doctor` and send /Library/Logs/celare/daemon.log", spec.NodeName, route.Interface, r.LatencyMs)
+		}
+		return fmt.Sprintf("%s doesn't work directly over %s either (%s): your network is probably blocking this server. `celare nodes test` checks every node this way; pick one that works", spec.NodeName, route.Interface, r.Error)
+	}
 }
 
 type engineCloser struct{ e *engine.Engine }
@@ -419,6 +438,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	}
 	d := daemon.New(tunnel, wallClock{}, httpProbe{})
 	srv := &api.Server{
+		Diagnose:  diagnose(tunnel),
 		Version:   Version,
 		Daemon:    d,
 		ConfigDir: configDir,

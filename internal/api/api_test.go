@@ -226,3 +226,36 @@ func mustChange(t *testing.T, c *api.Client, r api.ChangeRequest) daemon.Change 
 	}
 	return ch
 }
+
+type failingProbe struct{}
+
+func (failingProbe) Probe(context.Context, string) error { return errors.New("no response within 15s") }
+
+// When nothing gets through, the error says why: the server tests
+// the node outside the tunnel and puts the verdict in the hint.
+func TestFailedTrafficCheckCarriesTheDiagnosis(t *testing.T) {
+	e := serve(t, configTOML)
+	srv := &api.Server{
+		Daemon:    daemon.New(&fakeTunnel{}, realClock{}, failingProbe{}),
+		ConfigDir: e.dir,
+		StatePath: filepath.Join(e.dir, "state2.json"),
+		Diagnose: func(_ context.Context, spec *daemon.Spec) string {
+			return spec.NodeName + " is blocked on this network"
+		},
+	}
+	sock := e.sock + "d"
+	stop, err := srv.Listen(sock, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stop(); os.Remove(sock) })
+
+	_, err = api.NewClient(sock).CreateChange(ctx, api.ChangeRequest{Action: "connect", Node: "tokyo", Probe: "https://example.test"})
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "probe_failed" || apiErr.Hint != "tokyo is blocked on this network" {
+		t.Fatalf("err = %#v, want probe_failed with the diagnosis as hint", err)
+	}
+	if apiErr.Change == nil || apiErr.Change.State != daemon.Reverted {
+		t.Errorf("change = %+v, want the reverted change attached", apiErr.Change)
+	}
+}

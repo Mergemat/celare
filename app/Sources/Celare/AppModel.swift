@@ -25,6 +25,8 @@ final class AppModel {
     var serviceMissing = false
     var latency: [String: TestResult] = [:]
     var busy: String?
+    /// The node a connect is in progress for, shown while it runs.
+    var connecting: String?
     /// The last failed action, shown until the next one succeeds.
     var error: CLI.Failure?
     var statusError: CLI.Failure?
@@ -156,6 +158,8 @@ final class AppModel {
     func connect(_ node: String?) async {
         var args = ["connect", "--probe", "https://www.gstatic.com/generate_204"]
         if let node { args.insert(node, at: 1) }
+        connecting = node ?? connectTarget
+        defer { connecting = nil }
         await perform("Connecting…", args)
     }
 
