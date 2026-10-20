@@ -265,3 +265,10 @@ func decode(t *testing.T, b []byte) any {
 	}
 	return v
 }
+
+func mustUnmarshal(t *testing.T, b []byte, v any) {
+	t.Helper()
+	if err := json.Unmarshal(b, v); err != nil {
+		t.Fatalf("invalid JSON %s: %v", b, err)
+	}
+}

@@ -33,6 +33,11 @@ type StreamSettings struct {
 	RawSettings      *RawSettings      `json:"rawSettings,omitempty"`
 	HysteriaSettings *HysteriaSettings `json:"hysteriaSettings,omitempty"`
 	Finalmask        json.RawMessage   `json:"finalmask,omitempty"`
+	Sockopt          *Sockopt          `json:"sockopt,omitempty"`
+}
+
+type Sockopt struct {
+	Interface string `json:"interface,omitempty"`
 }
 
 type HysteriaSettings struct {
