@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Mergemat/celare/internal/config"
 	"github.com/Mergemat/celare/internal/daemon"
@@ -38,6 +39,13 @@ type Tunnel struct {
 	// Xray will reach the server once the tunnel is up.
 	CanReach    func(host string, port int, iface string) error
 	RestorePath string
+	// Routes and Interfaces read the system without starting a process;
+	// nil falls back to netstat and ifconfig through Run.
+	Routes     func() ([]netconf.Route, error)
+	Interfaces func() ([]string, error)
+	// Logf, if set, gets a line per start and stop saying where the time
+	// went.
+	Logf func(format string, args ...any)
 
 	// mu guards session: status reads it while the daemon changes it.
 	mu      sync.Mutex
@@ -63,6 +71,9 @@ func Exec(name string, args ...string) (string, error) {
 }
 
 func (t *Tunnel) routes() ([]netconf.Route, error) {
+	if t.Routes != nil {
+		return t.Routes()
+	}
 	out, err := t.Run("netstat", "-rn", "-f", "inet")
 	if err != nil {
 		return nil, fmt.Errorf("read routes: %w", err)
@@ -140,6 +151,7 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	if running {
 		return errors.New("tunnel already running")
 	}
+	clock := newStopwatch()
 	// DNS is set on the physical network service (Wi-Fi, Ethernet); the
 	// server connection leaves by the upstream, which is another VPN's
 	// tunnel when one is connected.
@@ -147,24 +159,38 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	if err != nil {
 		return err
 	}
-	_, service, err := t.physical(routes)
-	if err != nil {
-		return err
-	}
 	up, err := upstream(routes, "")
 	if err != nil {
 		return err
 	}
-	dnsOut, err := t.Run("networksetup", "-getdnsservers", service)
+	n, err := t.pinAddress(s.Node)
 	if err != nil {
-		return fmt.Errorf("read DNS of %s: %w", service, err)
+		return err
 	}
-	ifaces, err := t.Run("ifconfig", "-l")
+	// Each of these costs a round trip or a process, so the server check
+	// runs while the network service is read.
+	reached := make(chan error, 1)
+	go func() { reached <- t.reach(n, up.Interface) }()
+	_, service, err := t.physical(routes)
+	var dnsOut string
+	if err == nil {
+		if dnsOut, err = t.Run("networksetup", "-getdnsservers", service); err != nil {
+			err = fmt.Errorf("read DNS of %s: %w", service, err)
+		}
+	}
+	reachErr := <-reached
+	if err != nil {
+		return err
+	}
+	if reachErr != nil {
+		return fmt.Errorf("can't reach the server %s:%d over %s: %v", n.Address, n.Port, up.Interface, reachErr)
+	}
+	ifaces, err := t.interfaceNames()
 	if err != nil {
 		return fmt.Errorf("list interfaces: %w", err)
 	}
 	sess := &session{
-		Tun:       netconf.FreeTunName(strings.Fields(ifaces)),
+		Tun:       netconf.FreeTunName(ifaces),
 		Service:   service,
 		Interface: up.Interface,
 		SavedDNS:  netconf.ParseDNSServers(dnsOut),
@@ -172,16 +198,8 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	if !netconf.HasScopedDefault(routes, up.Interface) {
 		sess.ScopedRoute = netconf.ScopedDefault("delete", up)
 	}
+	clock.lap("checks")
 
-	n, err := t.pinAddress(s.Node)
-	if err != nil {
-		return err
-	}
-	if usesTCP(n) && t.CanReach != nil {
-		if err := t.CanReach(n.Address, n.Port, up.Interface); err != nil {
-			return fmt.Errorf("can't reach the server %s:%d over %s: %v", n.Address, n.Port, up.Interface, err)
-		}
-	}
 	dns := s.DNS
 	if len(dns) == 0 {
 		dns = config.DefaultDNS
@@ -209,29 +227,88 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		sess.engine.Close()
 		return fmt.Errorf("write restore file: %w", err)
 	}
+	clock.lap("engine")
+
 	cmds := netconf.UpCommands(sess.Tun, sess.Service)
 	if sess.ScopedRoute != nil {
-		cmds = append([][]string{netconf.ScopedDefault("add", up)}, cmds...)
+		cmds = append(cmds, netconf.ScopedDefault("add", up))
 	}
-	for _, cmd := range cmds {
-		if out, err := t.Run(cmd[0], cmd[1:]...); err != nil {
-			t.undo(sess)
-			return fmt.Errorf("%s: %s (%w); changes undone", strings.Join(cmd, " "), strings.TrimSpace(out), err)
-		}
+	if err := errors.Join(t.runAll(cmds)...); err != nil {
+		t.undo(sess)
+		return fmt.Errorf("%w; changes undone", err)
 	}
+	clock.lap("routes")
 	// With the tunnel's routes in place, the server must still be
 	// reachable the way Xray dials it, or every connection would fail.
-	if usesTCP(n) && t.CanReach != nil {
-		if err := t.CanReach(n.Address, n.Port, up.Interface); err != nil {
-			t.undo(sess)
-			return fmt.Errorf("the server %s:%d stopped answering over %s once traffic was routed into the tunnel: %v; changes undone", n.Address, n.Port, up.Interface, err)
-		}
+	if err := t.reach(n, up.Interface); err != nil {
+		t.undo(sess)
+		return fmt.Errorf("the server %s:%d stopped answering over %s once traffic was routed into the tunnel: %v; changes undone", n.Address, n.Port, up.Interface, err)
 	}
+	clock.lap("recheck")
+	t.logf("started %s via %s: %s", sess.Tun, up.Interface, clock)
 	t.mu.Lock()
 	t.session = sess
 	t.mu.Unlock()
 	return nil
 }
+
+// reach checks the server the way Xray dials it, where that can be
+// checked (TCP).
+func (t *Tunnel) reach(n node.Node, iface string) error {
+	if !usesTCP(n) || t.CanReach == nil {
+		return nil
+	}
+	return t.CanReach(n.Address, n.Port, iface)
+}
+
+func (t *Tunnel) interfaceNames() ([]string, error) {
+	if t.Interfaces != nil {
+		return t.Interfaces()
+	}
+	out, err := t.Run("ifconfig", "-l")
+	return strings.Fields(out), err
+}
+
+// runAll runs commands that don't depend on each other at once: starting
+// a process costs the daemon up to a second. The result has an error for
+// each command that failed, nil for the rest.
+func (t *Tunnel) runAll(cmds [][]string) []error {
+	errs := make([]error, len(cmds))
+	var wg sync.WaitGroup
+	for i, cmd := range cmds {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if out, err := t.Run(cmd[0], cmd[1:]...); err != nil {
+				errs[i] = fmt.Errorf("%s: %s (%w)", strings.Join(cmd, " "), strings.TrimSpace(out), err)
+			}
+		}()
+	}
+	wg.Wait()
+	return errs
+}
+
+func (t *Tunnel) logf(format string, args ...any) {
+	if t.Logf != nil {
+		t.Logf(format, args...)
+	}
+}
+
+// stopwatch names the stages of a start and how long each took.
+type stopwatch struct {
+	last   time.Time
+	stages []string
+}
+
+func newStopwatch() *stopwatch { return &stopwatch{last: time.Now()} }
+
+func (w *stopwatch) lap(stage string) {
+	now := time.Now()
+	w.stages = append(w.stages, fmt.Sprintf("%s %s", stage, now.Sub(w.last).Round(time.Millisecond)))
+	w.last = now
+}
+
+func (w *stopwatch) String() string { return strings.Join(w.stages, ", ") }
 
 func (t *Tunnel) Stop() error {
 	t.mu.Lock()
@@ -264,21 +341,23 @@ func (t *Tunnel) Recover() error {
 // failures (a route may already be gone) and reports the DNS one, which
 // is the one that leaves the machine offline.
 func (t *Tunnel) undo(s *session) error {
+	clock := newStopwatch()
 	var dnsErr error
 	cmds := netconf.DownCommands(s.Tun, s.Service, s.SavedDNS)
 	if s.ScopedRoute != nil {
-		// Before the DNS restore, which stays last.
-		cmds = slices.Insert(cmds, len(cmds)-1, s.ScopedRoute)
+		cmds = append(cmds, s.ScopedRoute)
 	}
-	for _, cmd := range cmds {
-		out, err := t.Run(cmd[0], cmd[1:]...)
-		if err != nil && cmd[0] == "networksetup" {
-			dnsErr = fmt.Errorf("restore DNS of %s: %s (%w)", s.Service, strings.TrimSpace(out), err)
+	for i, err := range t.runAll(cmds) {
+		if err != nil && cmds[i][0] == "networksetup" {
+			dnsErr = fmt.Errorf("restore DNS of %s: %w", s.Service, err)
 		}
 	}
+	clock.lap("routes")
 	if s.engine != nil {
 		s.engine.Close()
 	}
+	clock.lap("engine")
+	t.logf("stopped %s: %s", s.Tun, clock)
 	if err := os.Remove(t.RestorePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(dnsErr, err)
 	}

@@ -4,6 +4,7 @@
 package netconf
 
 import (
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -109,7 +110,7 @@ func HasScopedDefault(routes []Route, iface string) bool {
 // half-default routes are in, they would be sent back into the tunnel.
 func ScopedDefault(op string, up Route) []string {
 	cmd := []string{"route", "-n", op, "-ifscope", up.Interface, "default"}
-	if strings.HasPrefix(up.Gateway, "link#") {
+	if net.ParseIP(up.Gateway) == nil {
 		return append(cmd, "-interface", up.Interface)
 	}
 	return append(cmd, up.Gateway)

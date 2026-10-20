@@ -435,6 +435,9 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 		Lookup:      func(host string) ([]net.IP, error) { return net.LookupIP(host) },
 		CanReach:    system.DialBound,
 		RestorePath: filepath.Join(supportDir, "restore.json"),
+		Routes:      system.DefaultRoutes,
+		Interfaces:  system.InterfaceNames,
+		Logf:        log.Printf,
 	}
 	if err := tunnel.Recover(); err != nil {
 		log.Printf("recovering a crashed session: %v", err)

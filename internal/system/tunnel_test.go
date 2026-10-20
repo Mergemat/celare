@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Mergemat/celare/internal/config"
@@ -35,9 +36,24 @@ type fakeRunner struct {
 	netstat  string
 	ran      [][]string
 	failWhen string
+	mu       sync.Mutex
+}
+
+// ranSorted is what ran, in a stable order: commands that don't depend on
+// each other run at once.
+func (r *fakeRunner) ranSorted() [][]string {
+	out := slices.Clone(r.ran)
+	slices.SortFunc(out, func(a, b []string) int { return strings.Compare(strings.Join(a, " "), strings.Join(b, " ")) })
+	return out
+}
+
+func (r *fakeRunner) has(cmd string) bool {
+	return slices.ContainsFunc(r.ran, func(c []string) bool { return strings.Join(c, " ") == cmd })
 }
 
 func (r *fakeRunner) Run(name string, args ...string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	cmd := append([]string{name}, args...)
 	line := strings.Join(cmd, " ")
 	switch {
@@ -104,14 +120,14 @@ func TestStartRoutesIntoAFreshUtunAndBindsToWiFi(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
+		{"networksetup", "-setdnsservers", "Wi-Fi", "169.254.10.1"},
 		{"route", "-n", "add", "-ifscope", "en0", "default", "192.168.1.1"},
+		{"route", "-n", "add", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
+		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-net", "0.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "add", "-net", "128.0.0.0/1", "-interface", "utun5"},
-		{"route", "-n", "add", "-inet6", "-net", "::/1", "-interface", "utun5"},
-		{"route", "-n", "add", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
-		{"networksetup", "-setdnsservers", "Wi-Fi", "169.254.10.1"},
 	}
-	if diff := cmp.Diff(want, r.ran); diff != "" {
+	if diff := cmp.Diff(want, r.ranSorted()); diff != "" {
 		t.Errorf("commands mismatch (-want +got):\n%s", diff)
 	}
 
@@ -168,14 +184,14 @@ func TestStopRestoresDNSAndRemovesRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{
+		{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1"},
+		{"route", "-n", "delete", "-ifscope", "en0", "default", "192.168.1.1"},
+		{"route", "-n", "delete", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
+		{"route", "-n", "delete", "-inet6", "-net", "::/1", "-interface", "utun5"},
 		{"route", "-n", "delete", "-net", "0.0.0.0/1", "-interface", "utun5"},
 		{"route", "-n", "delete", "-net", "128.0.0.0/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-inet6", "-net", "::/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-inet6", "-net", "8000::/1", "-interface", "utun5"},
-		{"route", "-n", "delete", "-ifscope", "en0", "default", "192.168.1.1"},
-		{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1"},
 	}
-	if diff := cmp.Diff(want, r.ran); diff != "" {
+	if diff := cmp.Diff(want, r.ranSorted()); diff != "" {
 		t.Errorf("commands mismatch (-want +got):\n%s", diff)
 	}
 	if e.closed != 1 {
@@ -194,9 +210,8 @@ func TestFailedRouteUndoesEverything(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "File exists") {
 		t.Fatalf("err = %v, want the route error", err)
 	}
-	last := r.ran[len(r.ran)-1]
-	if diff := cmp.Diff([]string{"networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1"}, last); diff != "" {
-		t.Errorf("last command should restore DNS (-want +got):\n%s", diff)
+	if !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") || !r.has("route -n delete -net 0.0.0.0/1 -interface utun5") {
+		t.Errorf("ran %v, want routes removed and DNS restored", r.ran)
 	}
 	if e.closed != 1 {
 		t.Errorf("engine closed %d times, want 1", e.closed)
@@ -220,7 +235,7 @@ func TestRecoverUndoesACrashedSession(t *testing.T) {
 	if err := fresh.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.ran) != 6 || r.ran[5][len(r.ran[5])-1] != "1.1.1.1" {
+	if len(r.ran) != 6 || !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") {
 		t.Errorf("recover ran %v, want the five route deletes and the DNS restore", r.ran)
 	}
 	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
@@ -232,8 +247,8 @@ func TestStartWithoutNetworkExplainsWhy(t *testing.T) {
 	r := &fakeRunner{netstat: "Internet:\n"}
 	tun, _ := newTunnel(t, r, &fakeEngine{})
 	err := tun.Start(tokyo)
-	if err == nil || !strings.Contains(err.Error(), "no physical network") {
-		t.Fatalf("err = %v, want no physical network", err)
+	if err == nil || !strings.Contains(err.Error(), "connect Wi-Fi or Ethernet") {
+		t.Fatalf("err = %v, want it to ask for Wi-Fi or Ethernet", err)
 	}
 }
 
@@ -255,16 +270,16 @@ func TestStartGoesOutThroughAnotherVPN(t *testing.T) {
 	if !strings.Contains(e.configs[0], `"interface": "utun4"`) {
 		t.Errorf("outbounds not bound to utun4:\n%s", e.configs[0])
 	}
-	if last := r.ran[len(r.ran)-1]; strings.Join(last, " ") != "networksetup -setdnsservers Wi-Fi 169.254.10.1" {
-		t.Errorf("last command %v, want DNS set on Wi-Fi", last)
+	if !r.has("networksetup -setdnsservers Wi-Fi 169.254.10.1") {
+		t.Errorf("ran %v, want DNS set on Wi-Fi", r.ran)
 	}
 	if tun.Interface() != "utun4" {
 		t.Errorf("Interface() = %q, want utun4", tun.Interface())
 	}
 	// Without a default scoped to utun4, Xray's bound connections would
 	// follow the tunnel's own routes back into it.
-	if first := strings.Join(r.ran[0], " "); first != "route -n add -ifscope utun4 default -interface utun4" {
-		t.Errorf("first command %q, want a default route scoped to utun4", first)
+	if !r.has("route -n add -ifscope utun4 default -interface utun4") {
+		t.Errorf("ran %v, want a default route scoped to utun4", r.ran)
 	}
 }
 
@@ -302,8 +317,8 @@ func TestStartUndoesWhenTheServerStopsAnsweringOnceRouted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "once traffic was routed into the tunnel") {
 		t.Fatalf("err = %v, want the post-route reach failure", err)
 	}
-	if last := strings.Join(r.ran[len(r.ran)-1], " "); last != "networksetup -setdnsservers Wi-Fi 1.1.1.1" {
-		t.Errorf("last command %q, want DNS restored", last)
+	if !r.has("networksetup -setdnsservers Wi-Fi 1.1.1.1") {
+		t.Errorf("ran %v, want DNS restored", r.ran)
 	}
 	if e.closed != 1 || tun.Interface() != "" {
 		t.Errorf("engine closed %d times, interface %q; want it stopped", e.closed, tun.Interface())
