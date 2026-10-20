@@ -69,11 +69,13 @@ Rule matches are classified automatically: `domain:x`, `full:x`, `keyword:x`,
 
 Exit codes: `0` ok · `1` error · `2` usage · `3` daemon unreachable · `4` conflict (a change is pending) · `5` reverted (probe failed or not confirmed).
 
-### One VPN at a time
+### Alongside other VPNs
 
-`connect` refuses while another VPN holds the default route. Two VPNs can't
-both route all traffic, and a kill switch in the other one silently drops
-celare's traffic. `celare doctor` names the interface.
+celare's own connection to its server leaves by the system's current route
+out. With another VPN such as V2Box connected, that is the other VPN's
+tunnel, so traffic goes apps → celare → V2Box → celare's server. When the
+route out changes (Wi-Fi to Ethernet, a VPN connecting or disconnecting),
+celare restarts its tunnel on the new path.
 
 ## Daemon API
 

@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -393,37 +392,26 @@ func (wallClock) AfterFunc(d time.Duration, f func()) func() bool {
 	return time.AfterFunc(d, f).Stop
 }
 
-// httpProbe treats any HTTP answer as success: it proves traffic flows.
-type httpProbe struct{}
+// systemProbe checks the new tunnel the way any app would use it, and
+// says which stage failed.
+type systemProbe struct{}
 
-func (httpProbe) Probe(ctx context.Context, url string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		// The daemon gives the check 15 seconds.
-		return errors.New(probe.Explain(err, 15*time.Second))
-	}
-	resp.Body.Close()
-	return nil
-}
+func (systemProbe) Probe(ctx context.Context, url string) error { return probe.System(ctx, url) }
 
 // diagnose runs after the tunnel's traffic check failed and the previous
-// state is back: it tries the node directly over the physical interface,
-// the way the tunnel reaches it.
+// state is back: it tries the node on its own over the same upstream the
+// tunnel used, to tell a bad node from a tunnel fault.
 func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
 	return func(ctx context.Context, spec *daemon.Spec) string {
-		route, _, err := t.Physical()
+		up, err := t.Upstream("")
 		if err != nil {
 			return err.Error()
 		}
-		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 10*time.Second, route.Interface)
+		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 10*time.Second, up.Interface)
 		if r.OK {
-			return fmt.Sprintf("%s works on its own over %s (%d ms), so traffic broke inside celare's tunnel. Run `celare doctor` and send /Library/Logs/celare/daemon.log", spec.NodeName, route.Interface, r.LatencyMs)
+			return fmt.Sprintf("%s works on its own over %s (%d ms), so traffic broke inside celare's tunnel; /Library/Logs/celare/xray.log has the details", spec.NodeName, up.Interface, r.LatencyMs)
 		}
-		return fmt.Sprintf("%s doesn't work directly over %s either (%s): your network is probably blocking this server. `celare nodes test` checks every node this way; pick one that works", spec.NodeName, route.Interface, r.Error)
+		return fmt.Sprintf("%s doesn't work over %s on its own either (%s); try another node, `celare nodes test` checks them all", spec.NodeName, up.Interface, r.Error)
 	}
 }
 
@@ -451,7 +439,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	if err := tunnel.Recover(); err != nil {
 		log.Printf("recovering a crashed session: %v", err)
 	}
-	d := daemon.New(tunnel, wallClock{}, httpProbe{})
+	d := daemon.New(tunnel, wallClock{}, systemProbe{})
 	srv := &api.Server{
 		Diagnose:  diagnose(tunnel),
 		Version:   Version,
@@ -483,8 +471,9 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	return nil
 }
 
-// watchNetwork restarts the tunnel when the physical interface changes
-// (Wi-Fi to Ethernet, another network), since Xray is bound to it.
+// watchNetwork restarts the tunnel when its upstream changes (Wi-Fi to
+// Ethernet, another VPN connecting or disconnecting), since Xray's
+// outbounds are bound to it.
 func watchNetwork(ctx context.Context, d *daemon.Daemon, t *system.Tunnel) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -498,11 +487,11 @@ func watchNetwork(ctx context.Context, d *daemon.Daemon, t *system.Tunnel) {
 		if bound == "" {
 			continue
 		}
-		route, _, err := t.Physical()
-		if err != nil || route.Interface == bound {
+		up, err := t.Upstream(t.TunName())
+		if err != nil || up.Interface == bound {
 			continue
 		}
-		if err := d.Restart(fmt.Sprintf("network moved from %s to %s", bound, route.Interface)); err != nil && !errors.Is(err, context.Canceled) {
+		if err := d.Restart(fmt.Sprintf("upstream moved from %s to %s", bound, up.Interface)); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("restart after network change: %v", err)
 		}
 	}

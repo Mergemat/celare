@@ -40,7 +40,7 @@ enum Snapshot {
         ]
         func tunnel(up: Bool, pending: Change? = nil) -> Tunnel {
             Tunnel(state: up ? "up" : "down", node: up ? "main/Tokyo" : nil, since: Date().addingTimeInterval(-1800),
-                   pending: pending, version: nil, lastNode: up ? "main/Tokyo" : nil, system: SystemInfo(interface: up ? "en0" : nil, tun: nil, foreignTunnels: nil, otherVPNs: scenario == "othervpn" ? ["V2BOX"] : nil))
+                   pending: pending, version: nil, lastNode: up ? "main/Tokyo" : nil, system: SystemInfo(interface: up ? "en0" : nil, tun: nil, foreignTunnels: nil, otherVPNs: nil))
         }
         model.nodesLoaded = true
         switch scenario {
@@ -51,9 +51,6 @@ enum Snapshot {
             model.nodes = nodes
             model.connecting = "main/Osaka"
             model.busy = "Connecting…"
-        case "othervpn":
-            model.tunnel = tunnel(up: false)
-            model.nodes = nodes
         case "empty":
             model.tunnel = tunnel(up: false)
         case "down":

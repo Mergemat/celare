@@ -83,34 +83,28 @@ func (a *app) doctorCmd() *cobra.Command {
 			}
 
 			t := &system.Tunnel{Run: system.Exec}
-			route, service, err := t.Physical()
+			ours := ""
+			if tunnelErr == nil && tunnel.System != nil {
+				ours = tunnel.System.Tun
+			}
+			up, err := t.Upstream(ours)
 			if err != nil {
 				add("network", "fail", err.Error(), "connect Wi-Fi or Ethernet")
 			} else {
-				add("network", "ok", fmt.Sprintf("%s via %s (%s)", route.Interface, route.Gateway, service), "")
-				// celare reaches its servers by leaving through the physical
-				// interface directly; some VPN firewalls refuse exactly that.
-				if err := system.DialBound("1.1.1.1", 443, route.Interface); err != nil {
-					add("direct path", "fail", fmt.Sprintf("traffic can't leave by %s directly: %v", route.Interface, err),
-						"quit VPN apps whose firewall blocks traffic outside their tunnel (Mullvad, V2Box), even when they look disconnected")
-				} else {
-					add("direct path", "ok", "servers are reachable over "+route.Interface, "")
+				add("network", "ok", fmt.Sprintf("celare's traffic leaves by %s", up.Interface), "")
+				if err := system.DialBound("1.1.1.1", 443, up.Interface); err != nil {
+					add("upstream", "fail", fmt.Sprintf("traffic can't leave by %s: %v", up.Interface, err), "check your network or the VPN that owns "+up.Interface)
 				}
-				if tunnelErr == nil && tunnel.State == "down" {
-					if out, err := system.Exec("networksetup", "-getdnsservers", service); err == nil &&
-						strings.Contains(out, netconf.TunnelDNS) {
-						add("dns", "fail", service+" still points DNS at the tunnel, which is down", "run `networksetup -setdnsservers \""+service+"\" Empty`")
-					}
+			}
+			if _, service, err := t.Physical(); err == nil && tunnelErr == nil && tunnel.State == "down" {
+				if out, err := system.Exec("networksetup", "-getdnsservers", service); err == nil &&
+					(strings.Contains(out, netconf.TunnelDNS) || strings.Contains(out, netconf.LegacyTunnelDNS)) {
+					add("dns", "fail", service+" still points DNS at celare's tunnel, which is down", "run `networksetup -setdnsservers \""+service+"\" Empty`")
 				}
 			}
 			if out, err := system.Exec("scutil", "--nc", "list"); err == nil {
-				if names := netconf.ConnectedVPNs(out); len(names) > 0 {
-					for _, n := range names {
-						add("other VPNs", "fail", n+" is connected; its firewall blocks celare's direct connection to your server",
-							fmt.Sprintf("run `scutil --nc stop %q`", n))
-					}
-				} else {
-					add("other VPNs", "ok", "none connected", "")
+				for _, n := range netconf.ConnectedVPNs(out) {
+					add("other VPNs", "ok", n+" is connected; celare's traffic goes through it", "")
 				}
 			}
 			// Mullvad's service runs even when its app is quit; it only gets in
