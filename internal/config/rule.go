@@ -20,3 +20,8 @@ type Rule struct {
 	Domains []string `toml:"domains,omitempty" json:"domains,omitempty"`
 	IPs     []string `toml:"ips,omitempty" json:"ips,omitempty"`
 }
+
+// DefaultDNS is used when config.toml sets no dns. Lookups follow the
+// routing rules like any other traffic, so by default they go through the
+// proxy, encrypted.
+var DefaultDNS = []string{"https://1.1.1.1/dns-query"}
