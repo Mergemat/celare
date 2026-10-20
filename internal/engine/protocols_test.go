@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/b-omarov/celare/internal/config"
-	"github.com/b-omarov/celare/internal/node"
-	"github.com/b-omarov/celare/internal/xrayconf"
+	"github.com/Mergemat/celare/internal/config"
+	"github.com/Mergemat/celare/internal/node"
+	"github.com/Mergemat/celare/internal/xrayconf"
 )
 
 const testUUID = "22222222-3333-4444-9555-666666666666"

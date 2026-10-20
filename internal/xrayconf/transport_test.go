@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/b-omarov/celare/internal/node"
-	"github.com/b-omarov/celare/internal/xrayconf"
+	"github.com/Mergemat/celare/internal/node"
+	"github.com/Mergemat/celare/internal/xrayconf"
 	"github.com/google/go-cmp/cmp"
 )
 

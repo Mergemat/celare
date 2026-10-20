@@ -1,10 +1,11 @@
-module github.com/b-omarov/celare
+module github.com/Mergemat/celare
 
 go 1.27.1
 
 require github.com/xtls/xray-core v1.260327.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect

@@ -3,7 +3,7 @@ package node_test
 import (
 	"testing"
 
-	"github.com/b-omarov/celare/internal/node"
+	"github.com/Mergemat/celare/internal/node"
 	"github.com/google/go-cmp/cmp"
 )
 

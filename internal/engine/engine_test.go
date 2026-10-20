@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/b-omarov/celare/internal/config"
-	"github.com/b-omarov/celare/internal/engine"
-	"github.com/b-omarov/celare/internal/node"
-	"github.com/b-omarov/celare/internal/xrayconf"
+	"github.com/Mergemat/celare/internal/config"
+	"github.com/Mergemat/celare/internal/engine"
+	"github.com/Mergemat/celare/internal/node"
+	"github.com/Mergemat/celare/internal/xrayconf"
 )
 
 // The "server" is a second in-process Xray whose freedom outbound

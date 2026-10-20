@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/b-omarov/celare/internal/config"
-	"github.com/b-omarov/celare/internal/node"
-	"github.com/b-omarov/celare/internal/xrayconf"
+	"github.com/Mergemat/celare/internal/config"
+	"github.com/Mergemat/celare/internal/node"
+	"github.com/Mergemat/celare/internal/xrayconf"
 	"github.com/google/go-cmp/cmp"
 	"github.com/xtls/xray-core/core"
 )

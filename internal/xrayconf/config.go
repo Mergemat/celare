@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/b-omarov/celare/internal/config"
-	"github.com/b-omarov/celare/internal/node"
+	"github.com/Mergemat/celare/internal/config"
+	"github.com/Mergemat/celare/internal/node"
 )
 
 // Plan is everything needed to render one complete Xray config.

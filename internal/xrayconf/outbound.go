@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/b-omarov/celare/internal/node"
+	"github.com/Mergemat/celare/internal/node"
 )
 
 type OutboundObject struct {
