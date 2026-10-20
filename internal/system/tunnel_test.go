@@ -228,3 +228,18 @@ func TestStartWithoutNetworkExplainsWhy(t *testing.T) {
 		t.Fatalf("err = %v, want no physical network", err)
 	}
 }
+
+// Two VPNs can't both own the default route; with another one up,
+// celare's traffic would be swallowed or loop. Refuse and say why.
+func TestStartRefusesWhileAnotherVPNHoldsTheDefaultRoute(t *testing.T) {
+	r := &fakeRunner{netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n"}
+	e := &fakeEngine{}
+	tun, _ := newTunnel(t, r, e)
+	err := tun.Start(tokyo)
+	if err == nil || !strings.Contains(err.Error(), "utun4") || !strings.Contains(err.Error(), "turn it off") {
+		t.Fatalf("err = %v, want a refusal naming utun4", err)
+	}
+	if len(r.ran) != 0 || len(e.configs) != 0 {
+		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))
+	}
+}

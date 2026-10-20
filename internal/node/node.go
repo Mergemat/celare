@@ -13,66 +13,82 @@ import (
 )
 
 type Node struct {
-	Name       string
-	Protocol   string
-	Address    string
-	Port       int
-	Password   string
-	UUID       string
-	Flow       string
-	Encryption string
-	Cipher     string
+	Name       string `json:"name,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	Address    string `json:"address,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Password   string `json:"password,omitempty"`
+	UUID       string `json:"uuid,omitempty"`
+	Flow       string `json:"flow,omitempty"`
+	Encryption string `json:"encryption,omitempty"`
+	Cipher     string `json:"cipher,omitempty"`
 	// PortHopping is a Hysteria2 port range such as "20000-30000".
-	PortHopping string
-	Obfs        Obfs
-	WireGuard   WireGuard
+	PortHopping string    `json:"portHopping,omitempty"`
+	Obfs        Obfs      `json:"obfs,omitzero"`
+	WireGuard   WireGuard `json:"wireGuard,omitzero"`
 	// Finalmask is Xray's raw JSON streamSettings.finalmask object.
-	Finalmask string
-	Transport Transport
-	Security  Security
+	Finalmask string    `json:"finalmask,omitempty"`
+	Transport Transport `json:"transport,omitzero"`
+	Security  Security  `json:"security,omitzero"`
 }
 
 type WireGuard struct {
-	PrivateKey     string
-	PeerPublicKey  string
-	LocalAddresses []string
-	MTU            int
+	PrivateKey     string   `json:"privateKey,omitempty"`
+	PeerPublicKey  string   `json:"peerPublicKey,omitempty"`
+	LocalAddresses []string `json:"localAddresses,omitempty"`
+	MTU            int      `json:"mtu,omitempty"`
 }
 
 type Obfs struct {
-	Type     string
-	Password string
+	Type     string `json:"type,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 type Transport struct {
-	Type          string
-	Path          string
-	Host          string
-	Mode          string
-	XPaddingBytes string
-	ServiceName   string
-	Authority     string
-	HeaderType    string
-	MTU           int
-	TTI           int
+	Type          string `json:"type,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Host          string `json:"host,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	XPaddingBytes string `json:"xPaddingBytes,omitempty"`
+	ServiceName   string `json:"serviceName,omitempty"`
+	Authority     string `json:"authority,omitempty"`
+	HeaderType    string `json:"headerType,omitempty"`
+	MTU           int    `json:"mtu,omitempty"`
+	TTI           int    `json:"tti,omitempty"`
 	// Extra is XHTTP's raw JSON "extra" object, passed to Xray untouched.
-	Extra string
+	Extra string `json:"extra,omitempty"`
 }
 
 type Security struct {
-	Type        string
-	SNI         string
-	Fingerprint string
-	ALPN        []string
-	ECHConfig   string
-	PublicKey   string
-	ShortID     string
-	SpiderX     string
+	Type        string   `json:"type,omitempty"`
+	SNI         string   `json:"sni,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
+	ALPN        []string `json:"alpn,omitempty"`
+	ECHConfig   string   `json:"echConfig,omitempty"`
+	PublicKey   string   `json:"publicKey,omitempty"`
+	ShortID     string   `json:"shortID,omitempty"`
+	SpiderX     string   `json:"spiderX,omitempty"`
 	// MLDSA65Verify is REALITY's post-quantum signature verification key.
-	MLDSA65Verify        string
-	PinnedPeerCertSHA256 []string
-	VerifyPeerCertByName string
-	AllowInsecure        bool
+	MLDSA65Verify        string   `json:"mldsa65Verify,omitempty"`
+	PinnedPeerCertSHA256 []string `json:"pinnedPeerCertSha256,omitempty"`
+	VerifyPeerCertByName string   `json:"verifyPeerCertByName,omitempty"`
+	AllowInsecure        bool     `json:"allowInsecure,omitempty"`
+}
+
+// Redacted returns a copy with credentials replaced, for output an agent
+// or a log may keep.
+func (n Node) Redacted() Node {
+	const r = "<redacted>"
+	hide := func(s *string) {
+		if *s != "" {
+			*s = r
+		}
+	}
+	hide(&n.Password)
+	hide(&n.UUID)
+	hide(&n.Obfs.Password)
+	hide(&n.WireGuard.PrivateKey)
+	return n
 }
 
 func ParseLink(uri string) (Node, error) {

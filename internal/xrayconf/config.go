@@ -21,6 +21,9 @@ type Plan struct {
 	// BindInterface is the physical interface outbound traffic must use, so
 	// Xray's own connections never loop back into the tunnel.
 	BindInterface string
+	// LogLevel is Xray's log level; "" means warning. Xray logs to
+	// stdout, so commands printing JSON there use "none".
+	LogLevel string
 }
 
 type TUN struct {
@@ -100,8 +103,12 @@ func Config(p Plan) ([]byte, error) {
 			o.StreamSettings.Sockopt = &Sockopt{Interface: p.BindInterface}
 		}
 	}
+	logLevel := p.LogLevel
+	if logLevel == "" {
+		logLevel = "warning"
+	}
 	cfg := xrayConfig{
-		Log: map[string]string{"loglevel": "warning"},
+		Log: map[string]string{"loglevel": logLevel},
 		Outbounds: []OutboundObject{
 			proxy,
 			direct,

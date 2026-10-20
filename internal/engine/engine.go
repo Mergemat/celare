@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 
+	xlog "github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/core"
 	// Registers every Xray protocol, transport and config loader.
 	_ "github.com/xtls/xray-core/main/distro/all"
@@ -35,3 +36,12 @@ func Start(configJSON []byte) (*Engine, error) {
 func (e *Engine) Close() error {
 	return e.instance.Close()
 }
+
+type discard struct{}
+
+func (discard) Handle(xlog.Message) {}
+
+// QuietLogs stops Xray's process-wide logger from writing to stdout. Xray
+// logs config warnings while loading, before any config sets a level,
+// which would corrupt a command's JSON output.
+func QuietLogs() { xlog.RegisterHandler(discard{}) }

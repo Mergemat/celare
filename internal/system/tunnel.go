@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/Mergemat/celare/internal/config"
 	"github.com/Mergemat/celare/internal/daemon"
@@ -31,6 +32,8 @@ type Tunnel struct {
 	Lookup      func(host string) ([]net.IP, error)
 	RestorePath string
 
+	// mu guards session: status reads it while the daemon changes it.
+	mu      sync.Mutex
 	session *session
 }
 
@@ -76,15 +79,13 @@ func (t *Tunnel) ForeignTunnels() []string {
 	if err != nil {
 		return nil
 	}
-	ours := ""
-	if t.session != nil {
-		ours = t.session.Tun
-	}
-	return netconf.ForeignTunnels(netconf.ParseDefaultRoutes(out), ours)
+	return netconf.ForeignTunnels(netconf.ParseDefaultRoutes(out), t.TunName())
 }
 
 // Interface is the physical interface the running tunnel is bound to.
 func (t *Tunnel) Interface() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.session == nil {
 		return ""
 	}
@@ -93,6 +94,8 @@ func (t *Tunnel) Interface() string {
 
 // TunName is the utun interface of the running tunnel.
 func (t *Tunnel) TunName() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.session == nil {
 		return ""
 	}
@@ -100,12 +103,18 @@ func (t *Tunnel) TunName() string {
 }
 
 func (t *Tunnel) Start(s daemon.Spec) error {
-	if t.session != nil {
+	t.mu.Lock()
+	running := t.session != nil
+	t.mu.Unlock()
+	if running {
 		return errors.New("tunnel already running")
 	}
 	route, service, err := t.Physical()
 	if err != nil {
 		return err
+	}
+	if foreign := t.ForeignTunnels(); len(foreign) > 0 {
+		return fmt.Errorf("another VPN holds the default route (%s); turn it off first, two VPNs can't both route all traffic", strings.Join(foreign, ", "))
 	}
 	dnsOut, err := t.Run("networksetup", "-getdnsservers", service)
 	if err != nil {
@@ -154,17 +163,21 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 			return fmt.Errorf("%s: %s (%w); changes undone", strings.Join(cmd, " "), strings.TrimSpace(out), err)
 		}
 	}
+	t.mu.Lock()
 	t.session = sess
+	t.mu.Unlock()
 	return nil
 }
 
 func (t *Tunnel) Stop() error {
-	if t.session == nil {
+	t.mu.Lock()
+	sess := t.session
+	t.session = nil
+	t.mu.Unlock()
+	if sess == nil {
 		return nil
 	}
-	err := t.undo(t.session)
-	t.session = nil
-	return err
+	return t.undo(sess)
 }
 
 // Recover undoes a session left behind by a crash.

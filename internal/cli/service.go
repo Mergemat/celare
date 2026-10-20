@@ -1,0 +1,375 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/Mergemat/celare/internal/api"
+	"github.com/Mergemat/celare/internal/daemon"
+	"github.com/Mergemat/celare/internal/engine"
+	"github.com/Mergemat/celare/internal/system"
+	"github.com/spf13/cobra"
+)
+
+const (
+	serviceLabel = "sh.celare.daemon"
+	plistPath    = "/Library/LaunchDaemons/" + serviceLabel + ".plist"
+	supportDir   = "/Library/Application Support/celare"
+	logPath      = "/Library/Logs/celare/daemon.log"
+)
+
+// daemonBinary is root-owned: launchd must never run a binary the user
+// could swap out.
+var daemonBinary = filepath.Join(supportDir, "bin", "celare")
+
+func (a *app) serviceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "service",
+		Short: "Install, remove or inspect the background daemon (install/uninstall need sudo)",
+		Long: `The daemon runs as root under launchd because creating the tunnel interface
+and changing routes and DNS need it. It listens on /var/run/celare.sock,
+which only the user who installed it can open, so celare itself never
+needs sudo after 'sudo celare service install'.`,
+	}
+	cmd.AddCommand(a.serviceInstallCmd(), a.serviceUninstallCmd(), a.serviceStatusCmd(), a.serviceRunCmd())
+	return cmd
+}
+
+func requireRoot(command string) error {
+	if os.Geteuid() != 0 {
+		return failure("needs_root", command+" changes system files and needs root", "run `sudo "+command+"`")
+	}
+	return nil
+}
+
+// invokingUser is the user who ran sudo; the daemon serves them.
+func invokingUser() (*user.User, error) {
+	uid := os.Getenv("SUDO_UID")
+	if uid == "" {
+		return nil, failure("no_sudo_user", "can't tell which user to install for", "run it with sudo from your own account, not from a root shell")
+	}
+	return user.LookupId(uid)
+}
+
+func plist(configDir, uid string) string {
+	args := []string{daemonBinary, "service", "run", "--config", configDir, "--owner", uid}
+	var b strings.Builder
+	for _, a := range args {
+		fmt.Fprintf(&b, "\t\t<string>%s</string>\n", xmlEscape(a))
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>` + serviceLabel + `</string>
+	<key>ProgramArguments</key>
+	<array>
+` + b.String() + `	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>` + logPath + `</string>
+	<key>StandardErrorPath</key>
+	<string>` + logPath + `</string>
+</dict>
+</plist>
+`
+}
+
+func xmlEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
+
+func (a *app) serviceInstallCmd() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install and start the daemon (sudo)",
+		Args:  exactArgs(0, "no arguments"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			u, err := invokingUser()
+			if err != nil {
+				return err
+			}
+			configDir := filepath.Join(u.HomeDir, ".config", "celare")
+			p := plist(configDir, u.Uid)
+			data := map[string]any{"plist": plistPath, "binary": daemonBinary, "configDir": configDir, "user": u.Username, "dryRun": dryRun}
+			if dryRun {
+				return a.ok(data, func(w io.Writer) {
+					fmt.Fprintf(w, "would install %s and %s for %s:\n\n%s", daemonBinary, plistPath, u.Username, p)
+				})
+			}
+			if err := requireRoot("celare service install"); err != nil {
+				return err
+			}
+			self, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			if err := installFile(self, daemonBinary, 0o755); err != nil {
+				return fmt.Errorf("install %s: %w", daemonBinary, err)
+			}
+			os.MkdirAll(filepath.Dir(logPath), 0o755)
+			if err := os.WriteFile(plistPath, []byte(p), 0o644); err != nil {
+				return err
+			}
+			exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
+			if out, err := exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err != nil {
+				return failure("launchctl_failed", strings.TrimSpace(string(out)), "see "+logPath)
+			}
+			if err := waitForSocket(a.env.Socket, 10*time.Second); err != nil {
+				return failure("daemon_not_started", err.Error(), "see "+logPath)
+			}
+			return a.ok(data, func(w io.Writer) {
+				fmt.Fprintf(w, "installed and started the daemon for %s\n", u.Username)
+			}, "celare nodes list", "celare connect <node> --confirm 30s")
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be installed")
+	return cmd
+}
+
+func installFile(src, dst string, mode os.FileMode) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, b, mode); err != nil {
+		return err
+	}
+	if err := os.Chown(tmp, 0, 0); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+func waitForSocket(path string, within time.Duration) error {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if c, err := net.Dial("unix", path); err == nil {
+			c.Close()
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("the daemon did not open %s within %s", path, within)
+}
+
+func (a *app) serviceUninstallCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "uninstall",
+		Short: "Stop and remove the daemon, restoring routes and DNS (sudo)",
+		Args:  exactArgs(0, "no arguments"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireRoot("celare service uninstall"); err != nil {
+				return err
+			}
+			// Stopping the daemon takes the tunnel down cleanly.
+			exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
+			recoverErr := (&system.Tunnel{Run: system.Exec, RestorePath: filepath.Join(supportDir, "restore.json")}).Recover()
+			for _, p := range []string{plistPath, daemonBinary, a.env.Socket} {
+				os.Remove(p)
+			}
+			if recoverErr != nil {
+				return failure("restore_failed", recoverErr.Error(), "check DNS in System Settings → Network")
+			}
+			return a.ok(map[string]any{"removed": []string{plistPath, daemonBinary}}, func(w io.Writer) {
+				fmt.Fprintln(w, "removed the daemon; config.toml was kept")
+			})
+		},
+	}
+}
+
+type serviceStatus struct {
+	Installed bool   `json:"installed"`
+	Running   bool   `json:"running"`
+	PID       int    `json:"pid,omitempty"`
+	Reachable bool   `json:"reachable"`
+	Log       string `json:"log"`
+}
+
+func (a *app) serviceStatus(ctx context.Context) serviceStatus {
+	st := serviceStatus{Log: logPath}
+	if _, err := os.Stat(plistPath); err == nil {
+		st.Installed = true
+	}
+	if out, err := exec.Command("launchctl", "print", "system/"+serviceLabel).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "state = running" {
+				st.Running = true
+			}
+			if pid, ok := strings.CutPrefix(line, "pid = "); ok {
+				st.PID, _ = strconv.Atoi(pid)
+			}
+		}
+	}
+	if _, err := a.client().Tunnel(ctx); err == nil {
+		st.Reachable = true
+	}
+	return st
+}
+
+func (a *app) serviceStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show whether the daemon is installed, running and reachable",
+		Args:  exactArgs(0, "no arguments"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			st := a.serviceStatus(cmd.Context())
+			var next []string
+			if !st.Installed {
+				next = []string{"sudo celare service install"}
+			}
+			return a.ok(st, func(w io.Writer) {
+				fmt.Fprintf(w, "installed: %v  running: %v  reachable: %v\nlog: %s\n", st.Installed, st.Running, st.Reachable, st.Log)
+			}, next...)
+		},
+	}
+}
+
+func (a *app) serviceRunCmd() *cobra.Command {
+	var configDir string
+	var owner int
+	cmd := &cobra.Command{
+		Use:    "run",
+		Short:  "Run the daemon in the foreground (launchd does this)",
+		Hidden: true,
+		Args:   exactArgs(0, "no arguments"),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireRoot("celare service run"); err != nil {
+				return err
+			}
+			return runDaemon(cmd.Context(), configDir, owner, a.env.Socket)
+		},
+	}
+	cmd.Flags().StringVar(&configDir, "config", "", "the user's config directory")
+	cmd.Flags().IntVar(&owner, "owner", -1, "uid allowed to use the socket")
+	cmd.MarkFlagRequired("config")
+	cmd.MarkFlagRequired("owner")
+	return cmd
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
+func (wallClock) AfterFunc(d time.Duration, f func()) func() bool {
+	return time.AfterFunc(d, f).Stop
+}
+
+// httpProbe treats any HTTP answer as success: it proves traffic flows.
+type httpProbe struct{}
+
+func (httpProbe) Probe(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+type engineCloser struct{ e *engine.Engine }
+
+func (c engineCloser) Close() error { return c.e.Close() }
+
+func runDaemon(ctx context.Context, configDir string, owner int, socket string) error {
+	log.SetFlags(log.LstdFlags)
+	os.MkdirAll(supportDir, 0o755)
+	// geoip:/geosite: rules read their lists from here.
+	os.Setenv("XRAY_LOCATION_ASSET", filepath.Join(configDir, "geo"))
+
+	tunnel := &system.Tunnel{
+		Run: system.Exec,
+		StartEngine: func(cfg []byte) (io.Closer, error) {
+			e, err := engine.Start(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return engineCloser{e}, nil
+		},
+		Lookup:      func(host string) ([]net.IP, error) { return net.LookupIP(host) },
+		RestorePath: filepath.Join(supportDir, "restore.json"),
+	}
+	if err := tunnel.Recover(); err != nil {
+		log.Printf("recovering a crashed session: %v", err)
+	}
+	d := daemon.New(tunnel, wallClock{}, httpProbe{})
+	srv := &api.Server{
+		Daemon:    d,
+		ConfigDir: configDir,
+		StatePath: filepath.Join(supportDir, "state.json"),
+		System: func() *api.SystemInfo {
+			return &api.SystemInfo{Interface: tunnel.Interface(), Tun: tunnel.TunName(), ForeignTunnels: tunnel.ForeignTunnels()}
+		},
+	}
+	if err := srv.Resume(ctx); err != nil {
+		log.Printf("resuming the last tunnel: %v", err)
+	}
+	stop, err := srv.Listen(socket, owner)
+	if err != nil {
+		return err
+	}
+	log.Printf("listening on %s for uid %d, config in %s", socket, owner, configDir)
+
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+	watchNetwork(ctx, d, tunnel)
+	stop()
+	// Restore routes and DNS but keep state.json: after a reboot the
+	// tunnel comes back.
+	if err := tunnel.Stop(); err != nil {
+		log.Printf("stopping the tunnel: %v", err)
+	}
+	return nil
+}
+
+// watchNetwork restarts the tunnel when the physical interface changes
+// (Wi-Fi to Ethernet, another network), since Xray is bound to it.
+func watchNetwork(ctx context.Context, d *daemon.Daemon, t *system.Tunnel) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		bound := t.Interface()
+		if bound == "" {
+			continue
+		}
+		route, _, err := t.Physical()
+		if err != nil || route.Interface == bound {
+			continue
+		}
+		if err := d.Restart(fmt.Sprintf("network moved from %s to %s", bound, route.Interface)); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("restart after network change: %v", err)
+		}
+	}
+}

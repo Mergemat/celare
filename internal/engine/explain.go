@@ -85,6 +85,7 @@ func routerOf(configJSON []byte) (routing.Router, func(), error) {
 		return nil, nil, err
 	}
 	delete(raw, "inbounds")
+	raw["log"] = map[string]string{"loglevel": "none"}
 	stripped, _ := json.Marshal(raw)
 	cfg, err := core.LoadConfig("json", bytes.NewReader(stripped))
 	if err != nil {
