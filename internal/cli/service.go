@@ -194,9 +194,8 @@ func (a *app) serviceInstallCmd() *cobra.Command {
 			if err := os.WriteFile(plistPath, []byte(p), 0o644); err != nil {
 				return err
 			}
-			exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
-			if out, err := exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err != nil {
-				return failure("launchctl_failed", strings.TrimSpace(string(out)), "see "+logPath)
+			if out, err := restartService(); err != nil {
+				return failure("launchctl_failed", out, "see "+logPath)
 			}
 			if err := waitForSocket(a.env.Socket, 10*time.Second); err != nil {
 				return failure("daemon_not_started", err.Error(), "see "+logPath)
@@ -256,6 +255,27 @@ func installFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// restartService replaces the running daemon with the installed one.
+// bootout returns while the old daemon is still taking the tunnel down,
+// and bootstrap fails (5: Input/output error) until it has exited.
+func restartService() (string, error) {
+	exec.Command("launchctl", "bootout", "system/"+serviceLabel).Run()
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if exec.Command("launchctl", "print", "system/"+serviceLabel).Run() != nil {
+			break
+		}
+	}
+	var out []byte
+	var err error
+	for range 5 {
+		if out, err = exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput(); err == nil {
+			return "", nil
+		}
+		time.Sleep(time.Second)
+	}
+	return strings.TrimSpace(string(out)), err
 }
 
 func waitForSocket(path string, within time.Duration) error {
