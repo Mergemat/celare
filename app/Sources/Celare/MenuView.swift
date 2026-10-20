@@ -131,7 +131,16 @@ struct MenuView: View {
         case .needsNodes:
             addField(prominent: true)
         case .ready:
-            if model.connecting != nil {
+            if let vpn = model.otherVPNs.first, model.connecting == nil {
+                Button { Task { await model.turnOff(vpn) } } label: {
+                    Label("Turn off \(vpn)", systemImage: "power")
+                }
+                .buttonStyle(PrimaryBarStyle())
+                .disabled(model.busy != nil)
+                Text("\(vpn) is connected. Its firewall blocks celare's connection to your server.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.connecting != nil {
                 Button {} label: {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small).tint(.white)
@@ -159,7 +168,7 @@ struct MenuView: View {
                     Task { await model.installService() }
                 }
             }
-            if let foreign = model.tunnel?.system?.foreignTunnels, !foreign.isEmpty {
+            if model.otherVPNs.isEmpty, let foreign = model.tunnel?.system?.foreignTunnels, !foreign.isEmpty {
                 Text("Another VPN is on (\(foreign.joined(separator: ", "))). Turn it off before connecting.")
                     .font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 8)
             }

@@ -174,3 +174,18 @@ func FreeTunName(existing []string) string {
 	}
 	return "utun" + strconv.Itoa(highest+1)
 }
+
+var ncLine = regexp.MustCompile(`^\*?\s*\((\w+)\)\s+\S+\s+VPN\s+\([^)]*\)\s+"([^"]+)"`)
+
+// ConnectedVPNs reads `scutil --nc list` and returns the names of VPN
+// apps that are connected right now, e.g. "V2BOX". Each can be turned off
+// with `scutil --nc stop <name>`.
+func ConnectedVPNs(out string) []string {
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if m := ncLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "Connected" {
+			names = append(names, m[2])
+		}
+	}
+	return names
+}

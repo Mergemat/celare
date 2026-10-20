@@ -444,7 +444,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 		ConfigDir: configDir,
 		StatePath: filepath.Join(supportDir, "state.json"),
 		System: func() *api.SystemInfo {
-			return &api.SystemInfo{Interface: tunnel.Interface(), Tun: tunnel.TunName(), ForeignTunnels: tunnel.ForeignTunnels()}
+			return &api.SystemInfo{Interface: tunnel.Interface(), Tun: tunnel.TunName(), ForeignTunnels: tunnel.ForeignTunnels(), OtherVPNs: tunnel.ConnectedVPNs()}
 		},
 	}
 	if err := srv.Resume(ctx); err != nil {

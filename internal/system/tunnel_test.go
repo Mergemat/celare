@@ -30,6 +30,7 @@ const serviceOrderOut = `(1) Wi-Fi
 // fakeRunner answers read-only commands from canned output and records
 // the ones that change the system.
 type fakeRunner struct {
+	ncList   string
 	netstat  string
 	ran      [][]string
 	failWhen string
@@ -47,6 +48,8 @@ func (r *fakeRunner) Run(name string, args ...string) (string, error) {
 		return "1.1.1.1\n", nil
 	case line == "ifconfig -l":
 		return "lo0 en0 utun0 utun4\n", nil
+	case line == "scutil --nc list":
+		return r.ncList, nil
 	}
 	r.ran = append(r.ran, cmd)
 	if r.failWhen != "" && strings.Contains(line, r.failWhen) {
@@ -234,12 +237,15 @@ func TestStartWithoutNetworkExplainsWhy(t *testing.T) {
 // Two VPNs can't both own the default route; with another one up,
 // celare's traffic would be swallowed or loop. Refuse and say why.
 func TestStartRefusesWhileAnotherVPNHoldsTheDefaultRoute(t *testing.T) {
-	r := &fakeRunner{netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n"}
+	r := &fakeRunner{
+		netstat: "Internet:\ndefault  link#29  UCSg  utun4\ndefault  192.168.1.1  UGScIg  en0\n",
+		ncList:  "* (Connected)      2429CEEB VPN (hossin.asaadi.V2Box) \"V2BOX\"    [VPN:hossin.asaadi.V2Box]\n",
+	}
 	e := &fakeEngine{}
 	tun, _ := newTunnel(t, r, e)
 	err := tun.Start(tokyo)
-	if err == nil || !strings.Contains(err.Error(), "utun4") || !strings.Contains(err.Error(), "turn it off") {
-		t.Fatalf("err = %v, want a refusal naming utun4", err)
+	if err == nil || !strings.Contains(err.Error(), "V2BOX is connected") || !strings.Contains(err.Error(), `scutil --nc stop "V2BOX"`) {
+		t.Fatalf("err = %v, want a refusal naming V2BOX and how to turn it off", err)
 	}
 	if len(r.ran) != 0 || len(e.configs) != 0 {
 		t.Errorf("changed the system anyway: ran %v, started %d engines", r.ran, len(e.configs))

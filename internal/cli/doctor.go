@@ -103,17 +103,20 @@ func (a *app) doctorCmd() *cobra.Command {
 					}
 				}
 			}
-			ours := ""
-			if tunnelErr == nil && tunnel.System != nil {
-				ours = tunnel.System.Tun
-			}
-			if out, err := system.Exec("netstat", "-rn", "-f", "inet"); err == nil {
-				if foreign := netconf.ForeignTunnels(netconf.ParseDefaultRoutes(out), ours); len(foreign) > 0 {
-					add("other VPNs", "warn", "default route held by "+strings.Join(foreign, ", "),
-						"turn off other VPN apps (V2Box, a Tailscale exit node, ...) while celare is connected")
+			if out, err := system.Exec("scutil", "--nc", "list"); err == nil {
+				if names := netconf.ConnectedVPNs(out); len(names) > 0 {
+					for _, n := range names {
+						add("other VPNs", "fail", n+" is connected; its firewall blocks celare's direct connection to your server",
+							fmt.Sprintf("run `scutil --nc stop %q`", n))
+					}
 				} else {
-					add("other VPNs", "ok", "none", "")
+					add("other VPNs", "ok", "none connected", "")
 				}
+			}
+			// Mullvad's service runs even when its app is quit; it only gets in
+			// the way when it blocks traffic while disconnected.
+			if out, err := system.Exec("mullvad", "lockdown-mode", "get"); err == nil && strings.Contains(out, ": on") {
+				add("mullvad", "fail", "Lockdown mode is on, so Mullvad blocks all traffic outside its own tunnel", "run `mullvad lockdown-mode set off`")
 			}
 
 			failed := 0

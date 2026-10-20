@@ -110,3 +110,15 @@ func TestFreeTunName(t *testing.T) {
 		t.Errorf("FreeTunName = %q, want utun101 (above every existing utun)", got)
 	}
 }
+
+// Captured from `scutil --nc list` with V2Box connected.
+const ncList = `Available network connection services in the current set (*=enabled):
+* (Disconnected)   F05D7F50-A8D5-45DE-8442-1E45F4E46BDB VPN (io.tailscale.ipn.macsys) "Tailscale"                      [VPN:io.tailscale.ipn.macsys]
+* (Connected)      2429CEEB-441A-4C22-A4FE-23A588042933 VPN (hossin.asaadi.V2Box) "V2BOX"                          [VPN:hossin.asaadi.V2Box]
+`
+
+func TestConnectedVPNsByName(t *testing.T) {
+	if diff := cmp.Diff([]string{"V2BOX"}, netconf.ConnectedVPNs(ncList)); diff != "" {
+		t.Errorf("ConnectedVPNs mismatch (-want +got):\n%s", diff)
+	}
+}

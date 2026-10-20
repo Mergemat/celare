@@ -19,6 +19,7 @@ struct SystemInfo: Decodable, Sendable, Hashable {
     let interface: String?
     let tun: String?
     let foreignTunnels: [String]?
+    let otherVPNs: [String]?
 }
 
 struct Tunnel: Decodable, Sendable, Hashable {

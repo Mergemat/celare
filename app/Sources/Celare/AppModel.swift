@@ -163,6 +163,27 @@ final class AppModel {
         await perform("Connecting…", args)
     }
 
+    /// VPN apps that are connected and would block celare.
+    var otherVPNs: [String] {
+        guard tunnel?.isUp != true else { return [] }
+        return tunnel?.system?.otherVPNs ?? []
+    }
+
+    /// Disconnects another VPN app the way its own menu would.
+    func turnOff(_ vpn: String) async {
+        busy = "Turning off \(vpn)…"
+        defer { busy = nil }
+        await Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+            p.arguments = ["--nc", "stop", vpn]
+            try? p.run()
+            p.waitUntilExit()
+        }.value
+        try? await Task.sleep(for: .seconds(1.5))
+        await refreshTunnel()
+    }
+
     func disconnect() async { await perform("Disconnecting…", ["disconnect"]) }
     func confirm(_ id: String) async { await perform("Keeping…", ["confirm", id]) }
     func revert(_ id: String) async { await perform("Reverting…", ["revert", id]) }

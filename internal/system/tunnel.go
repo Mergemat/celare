@@ -86,6 +86,15 @@ func (t *Tunnel) ForeignTunnels() []string {
 	return netconf.ForeignTunnels(netconf.ParseDefaultRoutes(out), t.TunName())
 }
 
+// ConnectedVPNs names the VPN apps connected right now ("V2BOX").
+func (t *Tunnel) ConnectedVPNs() []string {
+	out, err := t.Run("scutil", "--nc", "list")
+	if err != nil {
+		return nil
+	}
+	return netconf.ConnectedVPNs(out)
+}
+
 // Interface is the physical interface the running tunnel is bound to.
 func (t *Tunnel) Interface() string {
 	t.mu.Lock()
@@ -118,6 +127,10 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		return err
 	}
 	if foreign := t.ForeignTunnels(); len(foreign) > 0 {
+		if names := t.ConnectedVPNs(); len(names) > 0 {
+			return fmt.Errorf("%s is connected, and its firewall blocks celare's connection to the server; turn it off first: `scutil --nc stop %q`",
+				strings.Join(names, " and "), names[0])
+		}
 		return fmt.Errorf("another VPN holds the default route (%s); turn it off first, two VPNs can't both route all traffic", strings.Join(foreign, ", "))
 	}
 	dnsOut, err := t.Run("networksetup", "-getdnsservers", service)
