@@ -26,8 +26,10 @@ type Node struct {
 	PortHopping string
 	Obfs        Obfs
 	WireGuard   WireGuard
-	Transport   Transport
-	Security    Security
+	// Finalmask is Xray's raw JSON streamSettings.finalmask object.
+	Finalmask string
+	Transport Transport
+	Security  Security
 }
 
 type WireGuard struct {
@@ -43,9 +45,18 @@ type Obfs struct {
 }
 
 type Transport struct {
-	Type string
-	Path string
-	Host string
+	Type          string
+	Path          string
+	Host          string
+	Mode          string
+	XPaddingBytes string
+	ServiceName   string
+	Authority     string
+	HeaderType    string
+	MTU           int
+	TTI           int
+	// Extra is XHTTP's raw JSON "extra" object, passed to Xray untouched.
+	Extra string
 }
 
 type Security struct {
@@ -57,6 +68,11 @@ type Security struct {
 	PublicKey   string
 	ShortID     string
 	SpiderX     string
+	// MLDSA65Verify is REALITY's post-quantum signature verification key.
+	MLDSA65Verify        string
+	PinnedPeerCertSHA256 []string
+	VerifyPeerCertByName string
+	AllowInsecure        bool
 }
 
 func ParseLink(uri string) (Node, error) {
@@ -74,25 +90,46 @@ func ParseLink(uri string) (Node, error) {
 		return Node{}, fmt.Errorf("share link has invalid port %q", u.Port())
 	}
 	q := u.Query()
+	mtu, err := optionalInt(q, "mtu")
+	if err != nil {
+		return Node{}, err
+	}
+	tti, err := optionalInt(q, "tti")
+	if err != nil {
+		return Node{}, err
+	}
 	n := Node{
-		Name:     u.Fragment,
-		Protocol: u.Scheme,
-		Address:  u.Hostname(),
-		Port:     port,
+		Name:      u.Fragment,
+		Protocol:  u.Scheme,
+		Address:   u.Hostname(),
+		Port:      port,
+		Finalmask: q.Get("fm"),
 		Transport: Transport{
-			Type: q.Get("type"),
-			Path: q.Get("path"),
-			Host: q.Get("host"),
+			Type:          q.Get("type"),
+			Path:          q.Get("path"),
+			Host:          q.Get("host"),
+			Mode:          q.Get("mode"),
+			XPaddingBytes: q.Get("x_padding_bytes"),
+			Extra:         q.Get("extra"),
+			ServiceName:   q.Get("serviceName"),
+			Authority:     q.Get("authority"),
+			HeaderType:    q.Get("headerType"),
+			MTU:           mtu,
+			TTI:           tti,
 		},
 		Security: Security{
-			Type:        q.Get("security"),
-			SNI:         q.Get("sni"),
-			Fingerprint: q.Get("fp"),
-			ALPN:        splitList(q.Get("alpn")),
-			ECHConfig:   q.Get("ech"),
-			PublicKey:   q.Get("pbk"),
-			ShortID:     q.Get("sid"),
-			SpiderX:     q.Get("spx"),
+			Type:                 q.Get("security"),
+			SNI:                  q.Get("sni"),
+			Fingerprint:          q.Get("fp"),
+			ALPN:                 splitList(q.Get("alpn")),
+			ECHConfig:            q.Get("ech"),
+			PublicKey:            q.Get("pbk"),
+			ShortID:              q.Get("sid"),
+			SpiderX:              q.Get("spx"),
+			MLDSA65Verify:        q.Get("pqv"),
+			PinnedPeerCertSHA256: splitList(firstNonEmpty(q.Get("pcs"), q.Get("pinSHA256"))),
+			VerifyPeerCertByName: q.Get("vcn"),
+			AllowInsecure:        q.Get("allowInsecure") == "1" || q.Get("insecure") == "1",
 		},
 	}
 	switch u.Scheme {
@@ -112,17 +149,19 @@ func ParseLink(uri string) (Node, error) {
 			PrivateKey:     u.User.Username(),
 			PeerPublicKey:  q.Get("publickey"),
 			LocalAddresses: splitList(q.Get("address")),
+			MTU:            mtu,
 		}
-		if mtu := q.Get("mtu"); mtu != "" {
-			if n.WireGuard.MTU, err = strconv.Atoi(mtu); err != nil {
-				return Node{}, fmt.Errorf("wireguard link has invalid mtu %q", mtu)
-			}
-		}
+		n.Transport.MTU = 0
 	case "ss":
 		n.Protocol = "shadowsocks"
 		n.Cipher, n.Password, err = shadowsocksCredentials(u.User)
 		if err != nil {
 			return Node{}, err
+		}
+		if plugin := q.Get("plugin"); plugin != "" {
+			if n.Transport, err = shadowsocksPlugin(plugin); err != nil {
+				return Node{}, err
+			}
 		}
 	default:
 		return Node{}, fmt.Errorf("unsupported share link scheme %q", u.Scheme)
@@ -153,6 +192,15 @@ type vmessLink struct {
 	SNI      string      `json:"sni"`
 	FP       string      `json:"fp"`
 	ALPN     string      `json:"alpn"`
+	// Type means the header type for tcp/kcp, "multi" for grpc and the
+	// mode for xhttp.
+	Type      string      `json:"type"`
+	Authority string      `json:"authority"`
+	MTU       json.Number `json:"mtu"`
+	TTI       json.Number `json:"tti"`
+	Pins      string      `json:"pcs"`
+	VCN       string      `json:"vcn"`
+	Finalmask string      `json:"fm"`
 }
 
 func parseVMess(payload string) (Node, error) {
@@ -168,25 +216,51 @@ func parseVMess(payload string) (Node, error) {
 	if err != nil {
 		return Node{}, fmt.Errorf("vmess link has invalid port %q", v.Port)
 	}
-	return Node{
-		Name:     v.Name,
-		Protocol: "vmess",
-		Address:  v.Address,
-		Port:     port,
-		UUID:     v.ID,
-		Cipher:   v.Cipher,
+	n := Node{
+		Name:      v.Name,
+		Protocol:  "vmess",
+		Address:   v.Address,
+		Port:      port,
+		UUID:      v.ID,
+		Cipher:    v.Cipher,
+		Finalmask: v.Finalmask,
 		Transport: Transport{
-			Type: v.Network,
-			Path: v.Path,
-			Host: v.Host,
+			Type:      v.Network,
+			Path:      v.Path,
+			Host:      v.Host,
+			Authority: v.Authority,
 		},
 		Security: Security{
-			Type:        v.Security,
-			SNI:         v.SNI,
-			Fingerprint: v.FP,
-			ALPN:        splitList(v.ALPN),
+			Type:                 v.Security,
+			SNI:                  v.SNI,
+			Fingerprint:          v.FP,
+			ALPN:                 splitList(v.ALPN),
+			PinnedPeerCertSHA256: splitList(v.Pins),
+			VerifyPeerCertByName: v.VCN,
 		},
-	}, nil
+	}
+	switch v.Network {
+	case "grpc":
+		n.Transport.ServiceName, n.Transport.Path = v.Path, ""
+		if v.Type == "multi" {
+			n.Transport.Mode = "multi"
+		}
+	case "xhttp":
+		n.Transport.Mode = v.Type
+	default:
+		n.Transport.HeaderType = v.Type
+	}
+	if v.MTU != "" {
+		if n.Transport.MTU, err = strconv.Atoi(v.MTU.String()); err != nil {
+			return Node{}, fmt.Errorf("vmess link has invalid mtu %q", v.MTU)
+		}
+	}
+	if v.TTI != "" {
+		if n.Transport.TTI, err = strconv.Atoi(v.TTI.String()); err != nil {
+			return Node{}, fmt.Errorf("vmess link has invalid tti %q", v.TTI)
+		}
+	}
+	return n, nil
 }
 
 // decodeBase64 accepts standard and URL-safe alphabets, with or without
@@ -214,4 +288,48 @@ func shadowsocksCredentials(user *url.Userinfo) (cipher, password string, err er
 		return "", "", errors.New("ss link userinfo decodes without a method:password separator")
 	}
 	return cipher, password, nil
+}
+
+func optionalInt(q url.Values, key string) (int, error) {
+	v := q.Get(key)
+	if v == "" {
+		return 0, nil
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("share link has invalid %s %q", key, v)
+	}
+	return i, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// shadowsocksPlugin maps the one SIP003 plugin Xray can express natively:
+// obfs-local with obfs=http becomes a TCP transport with an HTTP header.
+func shadowsocksPlugin(plugin string) (Transport, error) {
+	name, opts, _ := strings.Cut(plugin, ";")
+	if name != "obfs-local" && name != "simple-obfs" {
+		return Transport{}, fmt.Errorf("ss plugin %q is not supported; only obfs-local with obfs=http is", name)
+	}
+	t := Transport{Type: "tcp"}
+	for _, opt := range strings.Split(opts, ";") {
+		key, value, _ := strings.Cut(opt, "=")
+		switch key {
+		case "obfs":
+			if value != "http" {
+				return Transport{}, fmt.Errorf("ss plugin obfs=%s is not supported; only obfs=http is", value)
+			}
+			t.HeaderType = "http"
+		case "obfs-host":
+			t.Host = value
+		}
+	}
+	return t, nil
 }

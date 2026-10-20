@@ -24,7 +24,8 @@ func TestParseLinkTrojanTLS(t *testing.T) {
 		Port:     8444,
 		Password: "5f2b9c1e7a3d4e6f8091a2b3c4d5e6f7",
 		Transport: node.Transport{
-			Type: "tcp",
+			Type:       "tcp",
+			HeaderType: "none",
 		},
 		Security: node.Security{
 			Type:        "tls",
@@ -135,7 +136,8 @@ func TestParseLinkVMessTLS(t *testing.T) {
 		UUID:     "11111111-2222-4333-8444-555555555555",
 		Cipher:   "auto",
 		Transport: node.Transport{
-			Type: "tcp",
+			Type:       "tcp",
+			HeaderType: "none",
 		},
 		Security: node.Security{
 			Type:        "tls",
@@ -275,5 +277,143 @@ func TestParseLinkWireGuard(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("ParseLink mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Parameter names below are the ones 3x-ui's inbound-link.ts emits.
+
+func TestParseLinkVLESSXHTTPReality(t *testing.T) {
+	got, err := node.ParseLink("vless://22222222-3333-4444-9555-666666666666@example.test:443?type=xhttp&encryption=none&path=%2Fxh&host=cdn.example.test&mode=packet-up&x_padding_bytes=100-1000&extra=%7B%22xmux%22%3A%7B%22maxConcurrency%22%3A%2216-32%22%7D%7D&security=reality&pbk=PBK&fp=chrome&sni=yahoo.com&sid=a3f1&pqv=PQV#xh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := node.Node{
+		Name:       "xh",
+		Protocol:   "vless",
+		Address:    "example.test",
+		Port:       443,
+		UUID:       "22222222-3333-4444-9555-666666666666",
+		Encryption: "none",
+		Transport: node.Transport{
+			Type:          "xhttp",
+			Path:          "/xh",
+			Host:          "cdn.example.test",
+			Mode:          "packet-up",
+			XPaddingBytes: "100-1000",
+			Extra:         `{"xmux":{"maxConcurrency":"16-32"}}`,
+		},
+		Security: node.Security{
+			Type:          "reality",
+			SNI:           "yahoo.com",
+			Fingerprint:   "chrome",
+			PublicKey:     "PBK",
+			ShortID:       "a3f1",
+			MLDSA65Verify: "PQV",
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("ParseLink mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseLinkVLESSGRPCMulti(t *testing.T) {
+	got, err := node.ParseLink("vless://22222222-3333-4444-9555-666666666666@example.test:443?type=grpc&encryption=none&serviceName=svc&authority=grpc.example.test&mode=multi&security=tls&sni=grpc.example.test#grpc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := node.Transport{
+		Type:        "grpc",
+		ServiceName: "svc",
+		Authority:   "grpc.example.test",
+		Mode:        "multi",
+	}
+	if diff := cmp.Diff(want, got.Transport); diff != "" {
+		t.Errorf("Transport mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseLinkVLESSKCPWithFinalmask(t *testing.T) {
+	got, err := node.ParseLink("vless://22222222-3333-4444-9555-666666666666@example.test:443?type=kcp&encryption=none&mtu=1350&tti=20&headerType=none&fm=%7B%22udp%22%3A%5B%7B%22type%22%3A%22salamander%22%7D%5D%7D&security=none#kcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(node.Transport{Type: "kcp", HeaderType: "none", MTU: 1350, TTI: 20}, got.Transport); diff != "" {
+		t.Errorf("Transport mismatch (-want +got):\n%s", diff)
+	}
+	if want := `{"udp":[{"type":"salamander"}]}`; got.Finalmask != want {
+		t.Errorf("Finalmask = %q, want %q", got.Finalmask, want)
+	}
+}
+
+func TestParseLinkTLSVerificationOptions(t *testing.T) {
+	got, err := node.ParseLink("trojan://pw@example.test:443?type=tcp&security=tls&sni=example.test&pcs=AAAA%3D%2CBBBB%3D&vcn=cert.example.test&allowInsecure=1#pins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := node.Security{
+		Type:                 "tls",
+		SNI:                  "example.test",
+		PinnedPeerCertSHA256: []string{"AAAA=", "BBBB="},
+		VerifyPeerCertByName: "cert.example.test",
+		AllowInsecure:        true,
+	}
+	if diff := cmp.Diff(want, got.Security); diff != "" {
+		t.Errorf("Security mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParseLinkHysteria2PinSHA256(t *testing.T) {
+	got, err := node.ParseLink("hysteria2://auth@example.test:443?security=tls&sni=example.test&pinSHA256=0a1b2c#pin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"0a1b2c"}, got.Security.PinnedPeerCertSHA256); diff != "" {
+		t.Errorf("PinnedPeerCertSHA256 mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// 3x-ui's genVmessLink puts the gRPC service name in "path" and multi
+// mode in "type". The port is a string here, as other generators write it.
+func TestParseLinkVMessGRPCStringPort(t *testing.T) {
+	got, err := node.ParseLink("vmess://eyJ2IjoiMiIsInBzIjoidm0tZ3JwYyIsImFkZCI6ImV4YW1wbGUudGVzdCIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTIyMjItNDMzMy04NDQ0LTU1NTU1NTU1NTU1NSIsInNjeSI6ImF1dG8iLCJuZXQiOiJncnBjIiwidHlwZSI6Im11bHRpIiwicGF0aCI6InN2YyIsImF1dGhvcml0eSI6ImdycGMuZXhhbXBsZS50ZXN0IiwidGxzIjoidGxzIiwic25pIjoiZ3JwYy5leGFtcGxlLnRlc3QiLCJwY3MiOiJBQUFBPSIsInZjbiI6ImNlcnQuZXhhbXBsZS50ZXN0IiwiZm0iOiJ7XCJ0Y3BcIjpbe1widHlwZVwiOlwiZnJhZ21lbnRcIn1dfSJ9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := node.Node{
+		Name:      "vm-grpc",
+		Protocol:  "vmess",
+		Address:   "example.test",
+		Port:      443,
+		UUID:      "11111111-2222-4333-8444-555555555555",
+		Cipher:    "auto",
+		Finalmask: `{"tcp":[{"type":"fragment"}]}`,
+		Transport: node.Transport{
+			Type:        "grpc",
+			ServiceName: "svc",
+			Authority:   "grpc.example.test",
+			Mode:        "multi",
+		},
+		Security: node.Security{
+			Type:                 "tls",
+			SNI:                  "grpc.example.test",
+			PinnedPeerCertSHA256: []string{"AAAA="},
+			VerifyPeerCertByName: "cert.example.test",
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("ParseLink mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// 3x-ui rewrites a TCP HTTP header on Shadowsocks as a SIP003
+// obfs-local plugin, because v2rayN only reads "plugin".
+func TestParseLinkShadowsocksObfsLocalHTTP(t *testing.T) {
+	got, err := node.ParseLink("ss://YWVzLTI1Ni1nY206bGVnYWN5LXRlc3QtcHc@example.test:8388?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dobfs.example.test#obfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := node.Transport{Type: "tcp", HeaderType: "http", Host: "obfs.example.test"}
+	if diff := cmp.Diff(want, got.Transport); diff != "" {
+		t.Errorf("Transport mismatch (-want +got):\n%s", diff)
 	}
 }
