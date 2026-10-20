@@ -42,10 +42,10 @@ celare changes                                  recent changes and how they ende
 
 celare nodes list | show <node> | add <link> [--name N] | remove <node> | test [node...]
 celare subs  list | add <name> <url> | update [name...] | remove <name>
-celare rules list | add <action> <match>... [--name N] [--first] | remove <name|position> | explain <target>
+celare rules list | add <action> <match>... [--name N] [--first] | remove <name|position> | explain <target> | geo-update
 celare config init | check | path | render [node]
 
-celare service install | uninstall | status       (install/uninstall need sudo)
+celare service install [--uid U] | uninstall | status   (install/uninstall need sudo; --uid is for the app's admin prompt)
 celare doctor                                     every check, with the fix for each failure
 celare skill                                      SKILL.md for agents
 ```
@@ -68,6 +68,12 @@ Rule matches are classified automatically: `domain:x`, `full:x`, `keyword:x`,
 - Every command that writes has `--dry-run`. File edits show the diff.
 
 Exit codes: `0` ok · `1` error · `2` usage · `3` daemon unreachable · `4` conflict (a change is pending) · `5` reverted (probe failed or not confirmed).
+
+### One VPN at a time
+
+`connect` refuses while another VPN holds the default route. Two VPNs can't
+both route all traffic, and a kill switch in the other one silently drops
+celare's traffic. `celare doctor` names the interface.
 
 ## Daemon API
 
