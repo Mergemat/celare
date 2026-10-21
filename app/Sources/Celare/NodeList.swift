@@ -112,7 +112,8 @@ struct NodeRow: View {
                 Spacer(minLength: 6)
                 trailing
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Fixed, so swapping what's on the right never moves a row.
+            .frame(maxWidth: .infinity, minHeight: 16, maxHeight: 16, alignment: .leading)
         }
         .buttonStyle(HoverRaiseStyle(radius: 7, horizontal: 8, vertical: 6))
         .onHover { hovering = $0 }

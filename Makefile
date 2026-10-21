@@ -32,6 +32,10 @@ app: cli
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp "$$(cd app && swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Celare" $(APP)/Contents/MacOS/Celare
+	# SwiftPM stamps the deployment target as the SDK version, and macOS
+	# then draws the app in its old look (smaller corners, old controls).
+	vtool -set-build-version macos 14.0 $$(xcrun --sdk macosx --show-sdk-version) -replace \
+		-output $(APP)/Contents/MacOS/Celare $(APP)/Contents/MacOS/Celare
 	cp $(DIST)/celare $(APP)/Contents/Resources/celare
 	cp app/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	sed 's/VERSION/$(VERSION)/g' app/Info.plist > $(APP)/Contents/Info.plist

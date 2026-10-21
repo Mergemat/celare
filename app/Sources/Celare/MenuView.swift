@@ -9,7 +9,7 @@ struct MenuView: View {
     @State private var filter = ""
     /// The footer icon under the pointer, named in the footer.
     @State private var hint: String?
-    @State private var height: CGFloat = 0
+    @State private var fitter = WindowFitter()
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -31,11 +31,13 @@ struct MenuView: View {
         .padding(14)
         .frame(width: 300)
         .fixedSize(horizontal: false, vertical: true)
-        .animation(.easeOut(duration: 0.15), value: adding)
-        .animation(.easeOut(duration: 0.15), value: model.error)
-        .animation(.easeOut(duration: 0.15), value: model.removal)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-        .background { if live { FitWindow(height: height) } }
+        // Height changes are instant: the window can't animate in step
+        // with SwiftUI, so an animated change would show as a flicker.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fitter.fit(height: $0) }
+        .background { if live { WindowReader(fitter: fitter) } }
+        // Pinned to the top, so a window a pass behind its content shows
+        // still space at the bottom rather than everything sliding.
+        .frame(maxHeight: live ? .infinity : nil, alignment: .top)
         .background { shortcuts }
         .onAppear { if live { model.start() } }
     }
@@ -433,7 +435,10 @@ struct MenuView: View {
                 } label: {
                     footerGlyph("ellipsis")
                 }
-                .menuStyle(.borderlessButton)
+                // A button-styled menu takes the label as drawn, so it
+                // matches the icons beside it instead of AppKit's tint.
+                .menuStyle(.button)
+                .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .onHover { hint = $0 ? "More" : nil }
@@ -491,20 +496,49 @@ struct MenuView: View {
 }
 
 /// The menu bar window grows with its content but never shrinks back on
-/// its own; this keeps it the content's height, top edge under the bar.
-struct FitWindow: NSViewRepresentable {
-    let height: CGFloat
+/// its own. This keeps it exactly the content's height, top edge under the
+/// bar, resizing in the same pass that measured the content so the two
+/// never draw out of step.
+@MainActor
+final class WindowFitter {
+    weak var window: NSWindow?
+    private var height: CGFloat = 0
 
-    func makeNSView(context: Context) -> NSView { NSView() }
+    func fit(height: CGFloat) {
+        self.height = height
+        fit()
+    }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        guard height > 0 else { return }
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            let content = window.contentRect(forFrameRect: window.frame)
-            guard abs(content.height - height) > 0.5 else { return }
-            let fitted = NSRect(x: content.minX, y: content.maxY - height, width: content.width, height: height)
-            window.setFrame(window.frameRect(forContentRect: fitted), display: true)
+    func fit() {
+        guard height > 0, let window else { return }
+        let content = window.contentRect(forFrameRect: window.frame)
+        guard abs(content.height - height) > 0.5 else { return }
+        let fitted = NSRect(x: content.minX, y: content.maxY - height, width: content.width, height: height)
+        window.setFrame(window.frameRect(forContentRect: fitted), display: true, animate: false)
+    }
+}
+
+/// Hands the fitter its window the moment the view lands in one.
+struct WindowReader: NSViewRepresentable {
+    let fitter: WindowFitter
+
+    func makeNSView(context: Context) -> NSView { Reader(fitter: fitter) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Reader: NSView {
+        let fitter: WindowFitter
+
+        init(fitter: WindowFitter) {
+            self.fitter = fitter
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            fitter.window = window
+            fitter.fit()
         }
     }
 }
