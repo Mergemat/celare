@@ -6,26 +6,37 @@ struct MenuView: View {
     var live = true
     @State private var adding = false
     @State private var input = ""
+    @State private var filter = ""
+    /// The footer icon under the pointer, named in the footer.
+    @State private var hint: String?
     @State private var height: CGFloat = 0
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             topLine.padding(.bottom, 14)
             hero.padding(.bottom, 14)
             action
+            if let removal = model.removal {
+                RemovalNote(removal: removal, model: model).padding(.top, 10)
+            }
             if let error = model.error {
                 ErrorNote(failure: error) { model.error = nil }.padding(.top, 10)
             }
             if model.phase == .ready {
                 nodes.padding(.top, 16)
             }
-            footer.padding(.top, 12)
+            footer.padding(.top, 10)
         }
         .padding(14)
-        .frame(width: 284)
+        .frame(width: 300)
         .fixedSize(horizontal: false, vertical: true)
+        .animation(.easeOut(duration: 0.15), value: adding)
+        .animation(.easeOut(duration: 0.15), value: model.error)
+        .animation(.easeOut(duration: 0.15), value: model.removal)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         .background { if live { FitWindow(height: height) } }
+        .background { shortcuts }
         .onAppear { if live { model.start() } }
     }
 
@@ -47,6 +58,7 @@ struct MenuView: View {
 
     private var stateLabel: String {
         if model.connecting != nil { return "Connecting" }
+        if model.findingFastest { return "Measuring" }
         if let busy = model.busy { return busy }
         switch model.phase {
         case .loading: return "Checking"
@@ -59,7 +71,7 @@ struct MenuView: View {
     }
 
     private var stateColor: Color {
-        if model.connecting != nil { return .orange }
+        if model.connecting != nil || model.findingFastest { return .orange }
         switch model.phase {
         case .broken: return .red
         case .needsService: return .orange
@@ -77,48 +89,75 @@ struct MenuView: View {
             switch model.phase {
             case .loading:
                 Text(" ").font(.system(size: 17, weight: .semibold))
+                Text(" ").font(.system(size: 11.5))
             case .needsService:
-                Text("Set up celare").font(.system(size: 17, weight: .semibold))
-                Text("A background service creates the tunnel and sets routes and DNS. Installing it asks for your password once.")
-                    .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                title("Set up celare")
+                caption("A background service creates the tunnel and sets routes and DNS. Installing it asks for your password once.")
             case .needsNodes:
-                Text("Add a node").font(.system(size: 17, weight: .semibold))
-                Text("Paste a subscription URL from your panel, or a single share link.")
-                    .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                title("Add your first node")
+                caption("Paste the subscription URL your panel gives you, or share links. Several at once work too.")
             case .broken(let f):
-                Text("celare can't run").font(.system(size: 17, weight: .semibold))
-                Text(f.message + (f.hint.map { ". " + $0 } ?? ""))
-                    .font(.system(size: 11.5)).foregroundStyle(.secondary).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                title("celare can't run")
+                caption(f.message + (f.hint.map { ". " + $0 } ?? "")).textSelection(.enabled)
             case .ready:
                 if let name = model.connecting {
                     NodeName(name: name, size: 17)
-                    Text("Checking that traffic gets through…")
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    caption("Starting the tunnel and checking that traffic gets through…")
+                } else if model.findingFastest {
+                    title("Finding the fastest node")
+                    caption("\(model.nodes.count - model.testingNodes.count) of \(model.nodes.count) measured…")
                 } else if let t = model.tunnel, t.isUp, let name = t.node {
                     NodeName(name: name, size: 17)
-                    Text(detail(for: name)).font(.mono).foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        caption(connectedDetail(t, name: name, now: context.date))
+                    }
+                    .help(model.tunnel?.system?.interface.map { "Leaves through \($0)" } ?? "")
                 } else {
-                    Text("Not connected").font(.system(size: 17, weight: .semibold))
-                    Text(model.connectTarget == nil ? "Pick a node below." : "Connect, or pick another node below.")
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    title("Not connected")
+                    caption(downDetail)
                 }
             }
         }
     }
 
+    private func title(_ text: String) -> some View {
+        Text(text).font(.system(size: 17, weight: .semibold))
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func connectedDetail(_ tunnel: Tunnel, name: String, now: Date) -> String {
+        var parts = ["Connected " + Self.duration(from: tunnel.since, to: now)]
+        if let node = model.nodes.first(where: { $0.name == name }) { parts.append(node.summary) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// "just now", "for 4 min", "for 2 h 5 min".
+    static func duration(from start: Date, to now: Date) -> String {
+        let seconds = now.timeIntervalSince(start)
+        guard seconds >= 60 else { return "just now" }
+        let f = DateComponentsFormatter()
+        f.unitsStyle = .short
+        f.allowedUnits = seconds >= 86400 ? [.day, .hour] : [.hour, .minute]
+        f.maximumUnitCount = 2
+        return "for " + (f.string(from: seconds) ?? "")
+    }
+
+    private var downDetail: String {
+        guard let target = model.connectTarget else {
+            return "Pick a node below, or let celare measure them and pick the fastest."
+        }
+        if target == model.tunnel?.lastNode { return "Last used: \(target)." }
+        if model.nodes.count == 1 { return "One node, ready to go." }
+        if let best = model.fastest, best.node == target { return "Fastest right now: \(target), \(best.latencyMs ?? 0) ms." }
+        return "Connect, or pick another node below."
+    }
+
     /// "main/Tokyo" → "Tokyo": the bar has no room for the prefix.
     private func shortName(_ name: String) -> String {
         name.split(separator: "/", maxSplits: 1).last.map(String.init) ?? name
-    }
-
-    private func detail(for name: String) -> String {
-        var parts: [String] = []
-        if let n = model.nodes.first(where: { $0.name == name }) {
-            parts += [n.protocol, n.transport, n.security].compactMap { $0 }
-        }
-        if let iface = model.tunnel?.system?.interface { parts.append(iface) }
-        return parts.joined(separator: " · ")
     }
 
     // MARK: the one loud control
@@ -135,11 +174,11 @@ struct MenuView: View {
         case .needsNodes:
             addField(prominent: true)
         case .ready:
-            if model.connecting != nil {
+            if model.connecting != nil || model.findingFastest {
                 Button {} label: {
                     HStack(spacing: 8) {
-                        ProgressView().controlSize(.small).tint(.white)
-                        Text("Connecting…")
+                        Spinner(size: .small).tint(.white)
+                        Text(model.findingFastest ? "Measuring…" : "Connecting…")
                     }
                 }
                 .buttonStyle(PrimaryBarStyle())
@@ -150,13 +189,16 @@ struct MenuView: View {
                 Button { Task { await model.disconnect() } } label: { Label("Disconnect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(model.busy != nil)
-            } else {
-                let target = model.connectTarget
+            } else if let target = model.connectTarget {
                 Button { Task { await model.connect(target) } } label: {
-                    Label(target.map { "Connect to \(shortName($0))" } ?? "Connect", systemImage: "power")
+                    Label("Connect to \(shortName(target))", systemImage: "power")
                 }
                 .buttonStyle(PrimaryBarStyle())
-                .disabled(target == nil || model.busy != nil)
+                .disabled(model.busy != nil)
+            } else {
+                Button { Task { await model.connectFastest() } } label: { Label("Connect to the fastest", systemImage: "bolt.fill") }
+                    .buttonStyle(PrimaryBarStyle())
+                    .disabled(model.busy != nil || !model.testingNodes.isEmpty)
             }
             if model.serviceOutdated {
                 quietNote("The background service is older than this app.", action: "Update") {
@@ -167,30 +209,90 @@ struct MenuView: View {
     }
 
     private func addField(prominent: Bool) -> some View {
-        VStack(spacing: 8) {
-            TextField("https://… or vless://…", text: $input)
-                .textFieldStyle(.plain)
-                .font(.mono)
-                .padding(.horizontal, 9)
-                .frame(height: 28)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
-                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
-                .onSubmit(submit)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                TextField("Subscription URL or share link", text: $input)
+                    .textFieldStyle(.plain)
+                    .font(.mono)
+                    .focused($fieldFocused)
+                    .onSubmit(submit)
+                if input.isEmpty {
+                    Button(action: pasteFromClipboard) { Image(systemName: "doc.on.clipboard") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Paste")
+                } else {
+                    Button { input = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tertiary)
+                        .help("Clear")
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(fieldFocused ? 0.25 : 0.1), lineWidth: 0.5))
+            Text(addCaption)
+                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if prominent {
-                Button(action: submit) { Label("Add", systemImage: "plus") }
+                Button(action: submit) { Label(addTitle, systemImage: "plus") }
                     .buttonStyle(PrimaryBarStyle())
-                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || model.busy != nil)
+                    .disabled(Links.find(in: input).isEmpty || model.busy != nil)
+                    .padding(.top, 2)
+            } else {
+                HStack {
+                    Spacer()
+                    Button("Cancel") { closeAdding() }
+                        .buttonStyle(HoverRaiseStyle()).font(.system(size: 11, weight: .medium))
+                    Button(addTitle, action: submit)
+                        .buttonStyle(HoverRaiseStyle()).font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.blueDot)
+                        .disabled(Links.find(in: input).isEmpty || model.busy != nil)
+                }
+                .padding(.horizontal, -8)
             }
         }
+    }
+
+    /// Says what Add will do with what's in the field.
+    private var addCaption: String {
+        let links = Links.find(in: input)
+        if links.count > 1 { return "\(links.count) links." }
+        if let link = links.first {
+            if link.hasPrefix("http") { return "A subscription from \(URL(string: link)?.host() ?? "your panel"). Its nodes stay up to date." }
+            let scheme = String(link.prefix { $0 != ":" })
+            return "One \(Names.protocol(scheme == "hy2" ? "hysteria2" : scheme)) node."
+        }
+        return "https:// from your panel, or vless://, vmess://, trojan://, ss://, hysteria2://, wireguard://"
+    }
+
+    private var addTitle: String {
+        let links = Links.find(in: input)
+        if links.count > 1 { return "Add \(links.count)" }
+        return links.first?.hasPrefix("http") == true ? "Add subscription" : "Add"
+    }
+
+    private func pasteFromClipboard() {
+        let links = Links.onClipboard()
+        guard !links.isEmpty else { return }
+        input = links.joined(separator: " ")
+    }
+
+    private func openAdding() {
+        adding = true
+        fieldFocused = true
+    }
+
+    private func closeAdding() {
+        adding = false
+        input = ""
     }
 
     private func submit() {
         let text = input
         Task {
-            if await model.add(text) {
-                input = ""
-                adding = false
-            }
+            if await model.add(text) { closeAdding() }
         }
     }
 
@@ -208,14 +310,40 @@ struct MenuView: View {
 
     private var nodes: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Nodes").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                .padding(.bottom, 2)
-            if adding { addField(prominent: false).padding(.bottom, 4) }
+            HStack {
+                Text("Nodes").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if model.latency.values.filter(\.ok).count >= 2 {
+                    Button { model.sortBySpeed.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.arrow.down").font(.system(size: 9, weight: .semibold))
+                            Text(model.sortBySpeed ? "Fastest first" : "In order")
+                        }
+                    }
+                    .buttonStyle(HoverRaiseStyle(horizontal: 6, vertical: 2))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .help(model.sortBySpeed ? "Show nodes in config order" : "Put the quickest nodes on top")
+                        .padding(.trailing, -6)
+                }
+            }
+            .frame(height: 18)
+            if adding { addField(prominent: false).padding(.bottom, 8) }
+            if model.nodes.count > 8 { search.padding(.bottom, 2) }
+            let groups = model.groups(matching: filter)
             Group {
-                if model.nodes.count > 8 {
-                    ScrollView { rows }.frame(maxHeight: 240)
+                if groups.isEmpty {
+                    Text("Nothing matches “\(filter)”.").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                } else if model.nodes.count > 8 {
+                    if live {
+                        ScrollView { rows(groups) }.frame(maxHeight: 300)
+                    } else {
+                        // ImageRenderer draws a ScrollView empty.
+                        rows(groups).frame(maxHeight: 300, alignment: .top).clipped()
+                    }
                 } else {
-                    rows
+                    rows(groups)
                 }
             }
             // Rows bleed into the margin so their dots line up with the
@@ -224,16 +352,40 @@ struct MenuView: View {
         }
     }
 
-    private var rows: some View {
-        VStack(spacing: 1) {
-            ForEach(model.nodes) { node in
-                NodeRow(node: node,
-                        active: isUp && model.tunnel?.node == node.name,
-                        testing: model.testingNodes.contains(node.name),
-                        result: model.latency[node.name]) {
-                    Task { await model.connect(node.name) }
+    private var search: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.tertiary)
+            TextField("Filter \(model.nodes.count) nodes", text: $filter)
+                .textFieldStyle(.plain).font(.system(size: 11.5))
+            if !filter.isEmpty {
+                Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+    }
+
+    /// Nodes added by link sit right under "Nodes"; each subscription gets
+    /// a heading with what its panel reports.
+    private func rows(_ groups: [NodeGroup]) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(groups) { group in
+                if group.subscription != nil {
+                    GroupHeader(group: group, subscription: group.subscription.flatMap(model.subscription(named:)), model: model)
+                        .padding(.top, group == groups.first ? 0 : 8)
                 }
-                .disabled(model.busy != nil)
+                ForEach(group.nodes) { node in
+                    NodeRow(node: node,
+                            shortened: group.subscription != nil,
+                            active: isUp && model.tunnel?.node == node.name,
+                            connecting: model.connecting == node.name,
+                            testing: model.testingNodes.contains(node.name),
+                            result: model.latency[node.name],
+                            model: model)
+                        .disabled(model.busy != nil || model.connecting != nil)
+                }
             }
         }
     }
@@ -243,33 +395,54 @@ struct MenuView: View {
     private var footer: some View {
         HStack(spacing: 2) {
             if model.phase == .ready {
-                footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add a subscription or node") { adding.toggle() }
-                footerIcon("arrow.clockwise", help: "Update subscriptions") { Task { await model.updateSubscriptions() } }
-                footerIcon("gauge.with.needle", help: "Measure every node") { Task { await model.testNodes() } }
-                    .disabled(!model.testingNodes.isEmpty)
+                footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add nodes", key: "n") {
+                    adding ? closeAdding() : openAdding()
+                }
+                if !model.subscriptions.isEmpty {
+                    footerIcon("arrow.clockwise", help: "Update subscriptions", key: "r", working: model.busy == "Updating…") {
+                        Task { await model.updateSubscriptions() }
+                    }
+                }
+                footerIcon("gauge.with.needle", help: "Measure every node", key: "t", working: !model.testingNodes.isEmpty) {
+                    Task { await model.testNodes() }
+                }
+                .disabled(!model.testingNodes.isEmpty)
             }
-            Spacer()
+            Text(hint ?? model.notice ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 6)
+                .animation(nil, value: hint)
+                .contentTransition(.opacity)
+            Spacer(minLength: 4)
             if live {
                 Menu {
                     Button("Open config.toml") { Task { await model.openConfig() } }
+                        .keyboardShortcut(",")
                     Button("Copy CLI path") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
+                        model.say("Copied \(model.cli.binary.path)")
                     }
+                    Toggle("Open at Login", isOn: $model.opensAtLogin)
                     Divider()
                     Button("Quit celare") { NSApplication.shared.terminate(nil) }
+                        .keyboardShortcut("q")
                 } label: {
                     footerGlyph("ellipsis")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("More")
+                .onHover { hint = $0 ? "More" : nil }
             } else {
                 // ImageRenderer can't draw an AppKit menu; show its icon.
                 footerGlyph("ellipsis").padding(.horizontal, 7).padding(.vertical, 5)
             }
         }
+        .frame(height: 26)
         .padding(.horizontal, -7)
         .disabled(model.busy != nil)
     }
@@ -281,10 +454,39 @@ struct MenuView: View {
             .frame(width: 16, height: 16)
     }
 
-    private func footerIcon(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { footerGlyph(symbol) }
-            .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
-            .help(help)
+    private func footerIcon(_ symbol: String, help: String, key: KeyEquivalent, working: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if working {
+                Spinner().frame(width: 16, height: 16)
+            } else {
+                footerGlyph(symbol)
+            }
+        }
+        .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
+        .keyboardShortcut(key)
+        .onHover { hint = $0 ? "\(help)  ⌘\(key.character.uppercased())" : nil }
+    }
+
+    /// Shortcuts that work whenever the menu is open, without a visible
+    /// control of their own.
+    private var shortcuts: some View {
+        Group {
+            Button("") { Task { await model.openConfig() } }.keyboardShortcut(",")
+            Button("") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
+            // Escape backs out of whatever is open; with nothing open it
+            // falls through and closes the menu.
+            if adding || !filter.isEmpty || model.removal != nil || model.error != nil {
+                Button("") {
+                    if model.removal != nil { model.removal = nil } else if adding { closeAdding() }
+                    else if !filter.isEmpty { filter = "" } else { model.error = nil }
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
     }
 }
 
@@ -303,122 +505,6 @@ struct FitWindow: NSViewRepresentable {
             guard abs(content.height - height) > 0.5 else { return }
             let fitted = NSRect(x: content.minX, y: content.maxY - height, width: content.width, height: height)
             window.setFrame(window.frameRect(forContentRect: fitted), display: true)
-        }
-    }
-}
-
-/// "main/Tokyo" with the subscription part dimmed.
-struct NodeName: View {
-    let name: String
-    var size: CGFloat = 12.5
-
-    var body: some View {
-        let parts = name.split(separator: "/", maxSplits: 1).map(String.init)
-        if parts.count == 2 {
-            (Text(parts[0] + "/").foregroundStyle(.secondary) + Text(parts[1]))
-                .font(.system(size: size, weight: size > 14 ? .semibold : .medium))
-                .lineLimit(1)
-        } else {
-            Text(name).font(.system(size: size, weight: size > 14 ? .semibold : .medium)).lineLimit(1)
-        }
-    }
-}
-
-struct NodeRow: View {
-    let node: NodeView
-    let active: Bool
-    let testing: Bool
-    let result: TestResult?
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(active ? Palette.blueDot : Color.clear)
-                    .frame(width: 6, height: 6)
-                NodeName(name: node.name)
-                Spacer(minLength: 6)
-                Text(trailing).font(.mono).foregroundStyle(failed ? AnyShapeStyle(Color.red.opacity(0.85)) : AnyShapeStyle(.secondary))
-                    .help(result?.error ?? "Response time through this node")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(HoverRaiseStyle(radius: 7, horizontal: 8, vertical: 6))
-    }
-
-    private var failed: Bool { !testing && (result.map { !$0.ok } ?? false) }
-
-    private var trailing: String {
-        if testing { return "testing…" }
-        guard let result else { return node.protocol }
-        return result.ok ? "\(result.latencyMs ?? 0) ms" : "failed"
-    }
-}
-
-/// A pending change: the bar splits into Keep and Revert, and Keep drains
-/// as the deadline approaches.
-struct PendingBar: View {
-    let change: Change
-    let model: AppModel
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.25)) { context in
-            let left = remaining(at: context.date)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Button { Task { await model.confirm(change.id) } } label: {
-                        HStack(spacing: 6) {
-                            Text("Keep")
-                            Text("\(Int(left.seconds.rounded(.up)))s").font(.mono).opacity(0.75)
-                        }
-                    }
-                    .buttonStyle(PrimaryBarStyle())
-                    .overlay(alignment: .leading) {
-                        // The time left, as a lit band that shrinks.
-                        GeometryReader { geo in
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.12))
-                                .frame(width: geo.size.width * left.fraction)
-                        }
-                        .allowsHitTesting(false)
-                    }
-                    Button("Revert") { Task { await model.revert(change.id) } }
-                        .buttonStyle(RaisedButtonStyle())
-                }
-                Text("Goes back to \(change.from?.node ?? "disconnected") unless you keep it.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func remaining(at now: Date) -> (seconds: Double, fraction: Double) {
-        guard let deadline = change.deadline else { return (0, 0) }
-        let left = max(0, deadline.timeIntervalSince(now))
-        let total = change.createdAt.map { deadline.timeIntervalSince($0) } ?? 30
-        return (left, total > 0 ? min(1, left / total) : 0)
-    }
-}
-
-struct ErrorNote: View {
-    let failure: CLI.Failure
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(failure.message).font(.system(size: 11)).foregroundStyle(.red)
-                if let hint = failure.hint {
-                    Text(hint).font(.system(size: 10.5)).foregroundStyle(.secondary)
-                }
-            }
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark") }
-                .buttonStyle(.plain)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary)
         }
     }
 }

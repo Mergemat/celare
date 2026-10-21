@@ -64,11 +64,13 @@ struct PrimaryBarStyle: ButtonStyle {
 
 /// A secondary button that is always raised (Revert, next to Keep).
 struct RaisedButtonStyle: ButtonStyle {
+    var height: CGFloat = 30
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12.5, weight: .medium))
-            .padding(.horizontal, 12)
-            .frame(height: 30)
+            .font(.system(size: height < 30 ? 11 : 12.5, weight: .medium))
+            .padding(.horizontal, height < 30 ? 10 : 12)
+            .frame(height: height)
             .background(ConvexSurface(blue: false, pressed: configuration.isPressed, radius: 8))
             .contentShape(Rectangle())
     }
@@ -120,4 +122,23 @@ struct BarLabelStyle: LabelStyle {
             configuration.title
         }
     }
+}
+
+/// A spinner. ImageRenderer can't draw ProgressView, so snapshots get a
+/// still glyph in its place.
+struct Spinner: View {
+    var size: ControlSize = .mini
+    @Environment(\.snapshot) private var snapshot
+
+    var body: some View {
+        if snapshot {
+            Image(systemName: "circle.dotted").font(.system(size: size == .mini ? 11 : 14, weight: .semibold))
+        } else {
+            ProgressView().controlSize(size)
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var snapshot = false
 }
