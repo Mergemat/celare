@@ -5,15 +5,17 @@
 #   make app       dist/Celare.app, with the CLI inside
 #   make release   dist/Celare-<version>.zip, dist/celare-<version>-darwin.tar.gz, checksums
 #   make run       build the app and open it
-#   make site      deploy site/ to celare.omarov.sh
 #   make icon      redraw app/AppIcon.icns from the mark in app/Sources/Celare/Mark.swift
+#
+# site/ deploys to celare.omarov.sh on every push to main, through Vercel's
+# GitHub integration.
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
 LDFLAGS := -s -w -X github.com/Mergemat/celare/internal/cli.Version=$(VERSION)
 DIST    := dist
 APP     := $(DIST)/Celare.app
 
-.PHONY: test cli app release run site icon clean
+.PHONY: test cli app release run icon clean
 
 test:
 	go test ./...
@@ -59,9 +61,6 @@ icon:
 		sips -z $$double $$double $(DIST)/icon-1024.png --out $(DIST)/AppIcon.iconset/icon_$${size}x$${size}@2x.png >/dev/null; \
 	done
 	iconutil -c icns $(DIST)/AppIcon.iconset -o app/AppIcon.icns
-
-site:
-	cd site && vercel deploy --prod --yes
 
 clean:
 	rm -rf $(DIST) app/.build
