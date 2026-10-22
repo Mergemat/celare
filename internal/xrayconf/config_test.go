@@ -90,7 +90,7 @@ func TestConfigTUNHijacksDNS(t *testing.T) {
 	wantInbound := `{
 		"tag": "tun-in",
 		"protocol": "tun",
-		"settings": {"name": "utun9", "MTU": 1500},
+		"settings": {"name": "utun9", "mtu": 1500},
 		"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false}
 	}`
 	if diff := cmp.Diff([]any{decode(t, []byte(wantInbound))}, cfg.Inbounds); diff != "" {

@@ -203,8 +203,37 @@ func TestOutboundHysteria2(t *testing.T) {
 			"tlsSettings": {"serverName": "example.test", "alpn": ["h3"]},
 			"hysteriaSettings": {"version": 2, "auth": "auth"},
 			"finalmask": {
-				"udp": [{"type": "salamander", "settings": {"password": "obfs-test-pw"}}],
-				"quicParams": {"congestion": "bbr", "udpHop": {"ports": "20000-30000"}}
+				"udp": [
+					{"type": "salamander", "settings": {"password": "obfs-test-pw"}},
+					{"type": "udphop", "settings": {"mode": "intervallocal,intervalremote", "remotePorts": "20000-30000"}}
+				],
+				"quicParams": {"congestion": "bbr"}
+			}
+		}
+	}`)
+}
+
+// Links from servers on older Xray carry port hopping as
+// quicParams.udpHop, which current Xray ignores; it must still hop.
+func TestOutboundHysteria2LegacyUDPHop(t *testing.T) {
+	assertOutbound(t, node.Node{
+		Protocol:  "hysteria2",
+		Address:   "example.test",
+		Port:      443,
+		Password:  "auth",
+		Finalmask: `{"quicParams":{"udpHop":{"ports":"20000-30000","interval":"5-10"}}}`,
+		Security:  node.Security{Type: "tls", SNI: "example.test", ALPN: []string{"h3"}},
+	}, `{
+		"tag": "proxy",
+		"protocol": "hysteria",
+		"settings": {"version": 2, "address": "example.test", "port": 443},
+		"streamSettings": {
+			"network": "hysteria",
+			"security": "tls",
+			"tlsSettings": {"serverName": "example.test", "alpn": ["h3"]},
+			"hysteriaSettings": {"version": 2, "auth": "auth"},
+			"finalmask": {
+				"udp": [{"type": "udphop", "settings": {"mode": "intervallocal,intervalremote", "remotePorts": "20000-30000", "interval": "5-10"}}]
 			}
 		}
 	}`)

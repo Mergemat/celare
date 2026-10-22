@@ -133,7 +133,7 @@ func Config(p Plan) ([]byte, error) {
 		cfg.Inbounds = append(cfg.Inbounds, inbound{
 			Tag:      tagTUN,
 			Protocol: "tun",
-			Settings: map[string]any{"name": p.TUN.Name, "MTU": p.TUN.MTU},
+			Settings: map[string]any{"name": p.TUN.Name, "mtu": p.TUN.MTU},
 			Sniffing: defaultSniffing,
 		})
 		cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{

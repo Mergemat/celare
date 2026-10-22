@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bufio"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,9 +14,14 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +53,9 @@ func TestEveryProtocolCarriesTraffic(t *testing.T) {
 		name    string
 		inbound string // %d is the server port
 		client  node.Node
+		// hop makes the client hop ports, over a range of just the
+		// server's port.
+		hop bool
 	}{
 		{
 			name: "vless reality vision",
@@ -109,6 +118,15 @@ func TestEveryProtocolCarriesTraffic(t *testing.T) {
 			client: node.Node{Protocol: "hysteria2", Password: "hy-auth",
 				Obfs: node.Obfs{Type: "salamander", Password: "obfs-pw"}, Security: tlsClient},
 		},
+		{
+			name: "hysteria2 salamander port hopping",
+			inbound: `{"protocol": "hysteria", "settings": {"version": 2, "clients": [{"auth": "hy-auth"}]},
+				"streamSettings": {"network": "hysteria", "hysteriaSettings": {"version": 2},
+					"finalmask": {"udp": [{"type": "salamander", "settings": {"password": "obfs-pw"}}]}, ` + h3Server + `}}`,
+			client: node.Node{Protocol: "hysteria2", Password: "hy-auth",
+				Obfs: node.Obfs{Type: "salamander", Password: "obfs-pw"}, Security: tlsClient},
+			hop: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,13 +136,19 @@ func TestEveryProtocolCarriesTraffic(t *testing.T) {
 				t.Fatalf("bad inbound fixture: %v", err)
 			}
 			inbound["listen"], inbound["port"] = "127.0.0.1", port
+			// Xray servers refuse private destinations by default; the
+			// target here is on loopback.
+			freedom := map[string]any{"redirect": proxied, "finalRules": []any{map[string]any{"action": "allow"}}}
 			server, _ := json.Marshal(map[string]any{
 				"inbounds":  []any{inbound},
-				"outbounds": []any{map[string]any{"protocol": "freedom", "settings": map[string]any{"redirect": proxied}}},
+				"outbounds": []any{map[string]any{"protocol": "freedom", "settings": freedom}},
 			})
-			startEngine(t, string(server))
+			startServer(t, string(server))
 
 			tc.client.Address, tc.client.Port = "127.0.0.1", port
+			if tc.hop {
+				tc.client.PortHopping = strconv.Itoa(port)
+			}
 			socks := freePort(t)
 			cfg, err := xrayconf.Config(xrayconf.Plan{Node: tc.client, Default: config.Proxy, SOCKSPort: socks})
 			if err != nil {
@@ -136,6 +160,59 @@ func TestEveryProtocolCarriesTraffic(t *testing.T) {
 				t.Errorf("request through %s answered %q, want proxied", tc.name, got)
 			}
 		})
+	}
+}
+
+// startServer runs a test server in-process, or with the Xray binary
+// CELARE_XRAY_SERVER names, to check the client against servers on other
+// Xray versions.
+func startServer(t *testing.T, cfg string) {
+	t.Helper()
+	bin := os.Getenv("CELARE_XRAY_SERVER")
+	if bin == "" {
+		startEngine(t, cfg)
+		return
+	}
+	path := filepath.Join(t.TempDir(), "server.json")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "run", "-c", path)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+	// Xray logs "started" once it serves; until then, keep its output to
+	// explain a failure.
+	started := make(chan string, 1)
+	go func() {
+		var log []string
+		scan := bufio.NewScanner(out)
+		for scan.Scan() {
+			if strings.Contains(scan.Text(), "started") {
+				started <- ""
+				io.Copy(io.Discard, out)
+				return
+			}
+			log = append(log, scan.Text())
+		}
+		started <- strings.Join(log, "\n")
+	}()
+	select {
+	case failure := <-started:
+		if failure != "" {
+			t.Fatalf("%s did not start the server:\n%s", bin, failure)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not start the server within 10s", bin)
 	}
 }
 

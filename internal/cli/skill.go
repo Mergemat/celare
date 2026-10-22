@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+	"github.com/xtls/xray-core/core"
 )
 
 //go:embed SKILL.md
@@ -33,8 +34,8 @@ func (a *app) versionCmd() *cobra.Command {
 		Short: "Print celare's version",
 		Args:  exactArgs(0, "no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.ok(map[string]string{"version": Version, "xray": "26.3.27"}, func(w io.Writer) {
-				fmt.Fprintf(w, "celare %s (xray-core 26.3.27)\n", Version)
+			return a.ok(map[string]string{"version": Version, "xray": core.Version()}, func(w io.Writer) {
+				fmt.Fprintf(w, "celare %s (xray-core %s)\n", Version, core.Version())
 			})
 		},
 	}

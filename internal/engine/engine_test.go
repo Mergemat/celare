@@ -20,7 +20,9 @@ import (
 // The "server" is a second in-process Xray whose freedom outbound
 // redirects every proxied connection to a target that answers
 // "proxied". Traffic that goes direct reaches a target answering
-// "direct". So the response body says which path a request took.
+// "direct". So the response body says which path a request took. Xray
+// servers refuse private destinations by default, so the server allows
+// them: every target here is on loopback.
 func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
 	direct := answer(t, "direct")
 	proxied := answer(t, "proxied")
@@ -28,7 +30,7 @@ func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
 	startEngine(t, fmt.Sprintf(`{
 		"inbounds": [{"listen": "127.0.0.1", "port": %d, "protocol": "vless",
 			"settings": {"clients": [{"id": "22222222-3333-4444-9555-666666666666"}], "decryption": "none"}}],
-		"outbounds": [{"protocol": "freedom", "settings": {"redirect": "%s"}}]
+		"outbounds": [{"protocol": "freedom", "settings": {"redirect": "%s", "finalRules": [{"action": "allow"}]}}]
 	}`, serverPort, proxied))
 
 	socks := freePort(t)
@@ -62,7 +64,7 @@ func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
 	}
 }
 
-func startEngine(t *testing.T, cfg string) {
+func startEngine(t testing.TB, cfg string) {
 	t.Helper()
 	e, err := engine.Start([]byte(cfg))
 	if err != nil {
@@ -73,7 +75,7 @@ func startEngine(t *testing.T, cfg string) {
 
 // answer starts an HTTP server on 127.0.0.1 that replies with body and
 // returns its host:port.
-func answer(t *testing.T, body string) string {
+func answer(t testing.TB, body string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, body)
@@ -94,7 +96,7 @@ func socksClient(t *testing.T, port int) *http.Client {
 }
 
 // get returns the response body, or "" when the request fails.
-func get(t *testing.T, c *http.Client, u string) string {
+func get(t testing.TB, c *http.Client, u string) string {
 	t.Helper()
 	resp, err := c.Get(u)
 	if err != nil {
@@ -105,7 +107,7 @@ func get(t *testing.T, c *http.Client, u string) string {
 	return string(b)
 }
 
-func freePort(t *testing.T) int {
+func freePort(t testing.TB) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

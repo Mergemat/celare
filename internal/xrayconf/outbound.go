@@ -290,23 +290,63 @@ func finalmask(n node.Node) (json.RawMessage, error) {
 			return nil, fmt.Errorf("finalmask is not a JSON object: %w", err)
 		}
 	}
+	udp, _ := fm["udp"].([]any)
 	if n.Obfs.Type != "" {
-		udp, _ := fm["udp"].([]any)
-		fm["udp"] = append(udp, map[string]any{
+		udp = append(udp, map[string]any{
 			"type":     n.Obfs.Type,
 			"settings": map[string]any{"password": n.Obfs.Password},
 		})
 	}
+	hop := legacyUDPHop(fm)
 	if n.PortHopping != "" {
-		quic, _ := fm["quicParams"].(map[string]any)
-		if quic == nil {
-			quic = map[string]any{}
+		if hop == nil {
+			hop = map[string]any{}
 		}
-		quic["udpHop"] = map[string]any{"ports": n.PortHopping}
-		fm["quicParams"] = quic
+		hop["ports"] = n.PortHopping
+	}
+	if hop != nil && !hasMask(udp, "udphop") {
+		// Masks are listed innermost first. The hop mask opens the
+		// sockets the others wrap, so Xray only accepts it last.
+		// Hysteria hops by moving to another server port from a fresh
+		// local socket.
+		settings := map[string]any{"mode": "intervallocal,intervalremote"}
+		if ports, ok := hop["ports"]; ok {
+			settings["remotePorts"] = ports
+		}
+		if interval, ok := hop["interval"]; ok {
+			settings["interval"] = interval
+		}
+		udp = append(udp, map[string]any{"type": "udphop", "settings": settings})
+	}
+	if len(udp) > 0 {
+		fm["udp"] = udp
 	}
 	if len(fm) == 0 {
 		return nil, nil
 	}
 	return json.Marshal(fm)
+}
+
+// legacyUDPHop removes quicParams.udpHop, where links from older servers
+// still put port hopping, and returns it. Xray now ignores it there.
+func legacyUDPHop(fm map[string]any) map[string]any {
+	quic, _ := fm["quicParams"].(map[string]any)
+	hop, _ := quic["udpHop"].(map[string]any)
+	if hop == nil {
+		return nil
+	}
+	delete(quic, "udpHop")
+	if len(quic) == 0 {
+		delete(fm, "quicParams")
+	}
+	return hop
+}
+
+func hasMask(masks []any, kind string) bool {
+	for _, m := range masks {
+		if m, ok := m.(map[string]any); ok && m["type"] == kind {
+			return true
+		}
+	}
+	return false
 }
