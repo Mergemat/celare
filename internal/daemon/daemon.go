@@ -377,12 +377,14 @@ func (d *Daemon) Revert(id string) (Change, error) {
 }
 
 // Restart stops and starts the running spec again, e.g. after the
-// physical network changed. It does nothing while down.
-func (d *Daemon) Restart(reason string) error {
+// physical network changed. It does nothing while down or unless needed
+// still holds: the caller looked at the tunnel before other changes
+// were shut out, and may have seen one that is already gone.
+func (d *Daemon) Restart(reason string, needed func() bool) error {
 	d.op.Lock()
 	defer d.op.Unlock()
 	current := d.Current()
-	if current == nil {
+	if current == nil || !needed() {
 		return nil
 	}
 	if err := d.switchTo(current, current); err != nil {

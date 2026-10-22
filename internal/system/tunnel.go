@@ -25,10 +25,17 @@ import (
 	"github.com/Mergemat/celare/internal/xrayconf"
 )
 
+// Engine is a running Xray.
+type Engine interface {
+	io.Closer
+	// Done is closed once the engine has exited, closed or not.
+	Done() <-chan struct{}
+}
+
 // Tunnel implements daemon.Tunnel.
 type Tunnel struct {
 	// StartEngine starts Xray with a JSON config.
-	StartEngine func(configJSON []byte) (io.Closer, error)
+	StartEngine func(configJSON []byte) (Engine, error)
 	// Lookup resolves the server's domain before DNS moves into the tunnel.
 	Lookup func(host string) ([]net.IP, error)
 	// XrayLog, if set, is where the tunnel's Xray logs at info level,
@@ -46,6 +53,9 @@ type Tunnel struct {
 	// Logf, if set, gets a line per start and stop saying where the time
 	// went.
 	Logf func(format string, args ...any)
+	// OnEngineExit, if set, is called when the running tunnel's engine
+	// exits on its own, leaving routes and DNS pointing at a dead utun.
+	OnEngineExit func()
 
 	// mu guards session: status reads it while the daemon changes it.
 	mu      sync.Mutex
@@ -57,7 +67,7 @@ type session struct {
 	Tun         string     `json:"tun"`
 	Interface   string     `json:"interface"`
 	ScopedRoute *RouteSpec `json:"scopedRoute,omitempty"`
-	engine      io.Closer
+	engine      Engine
 }
 
 // Exec runs a command for real.
@@ -124,6 +134,36 @@ func (t *Tunnel) Interface() string {
 		return ""
 	}
 	return t.session.Interface
+}
+
+// EngineExited reports whether the running tunnel's engine has exited.
+func (t *Tunnel) EngineExited() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.session == nil {
+		return false
+	}
+	select {
+	case <-t.session.engine.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// watchEngine reports the session's engine exiting while the session
+// runs. Stop ends the session before closing the engine.
+func (t *Tunnel) watchEngine(s *session) {
+	<-s.engine.Done()
+	t.mu.Lock()
+	running := t.session == s
+	t.mu.Unlock()
+	if running {
+		t.logf("the engine of %s exited on its own", s.Tun)
+		if t.OnEngineExit != nil {
+			t.OnEngineExit()
+		}
+	}
 }
 
 // TunName is the utun interface of the running tunnel.
@@ -230,6 +270,7 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	t.mu.Lock()
 	t.session = sess
 	t.mu.Unlock()
+	go t.watchEngine(sess)
 	return nil
 }
 

@@ -113,6 +113,9 @@ func (p *Process) start(configJSON []byte) (*Process, error) {
 
 func (p *Process) PID() int { return p.cmd.Process.Pid }
 
+// Done is closed once the process has exited, closed or not.
+func (p *Process) Done() <-chan struct{} { return p.done }
+
 // Close releases the process's sockets immediately. There is no persistent
 // state inside Xray to flush, and the daemon has already restored DNS/routes.
 func (p *Process) Close() error {

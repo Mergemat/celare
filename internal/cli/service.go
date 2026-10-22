@@ -455,7 +455,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	engines := engine.NewPool(engine.Command{Argv: []string{self, "service", "xray"}})
 	defer engines.Close()
 	tunnel := &system.Tunnel{
-		StartEngine: func(cfg []byte) (io.Closer, error) {
+		StartEngine: func(cfg []byte) (system.Engine, error) {
 			return engines.Start(cfg)
 		},
 		XrayLog:     filepath.Join(filepath.Dir(logPath), "xray.log"),
@@ -465,6 +465,13 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 		Routes:      system.DefaultRoutes,
 		Interfaces:  system.InterfaceNames,
 		Logf:        log.Printf,
+	}
+	engineExits := make(chan struct{}, 1)
+	tunnel.OnEngineExit = func() {
+		select {
+		case engineExits <- struct{}{}:
+		default:
+		}
 	}
 	if err := tunnel.Recover(); err != nil {
 		log.Printf("recovering a crashed session: %v", err)
@@ -491,7 +498,7 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	watchNetwork(ctx, d, tunnel)
+	watchTunnel(ctx, d, tunnel, engineExits)
 	stop()
 	// Restore routes and DNS but keep state.json: after a reboot the
 	// tunnel comes back.
@@ -501,16 +508,29 @@ func runDaemon(ctx context.Context, configDir string, owner int, socket string) 
 	return nil
 }
 
-// watchNetwork restarts the tunnel when its upstream changes (Wi-Fi to
-// Ethernet, another VPN connecting or disconnecting), since Xray's
-// outbounds are bound to it.
-func watchNetwork(ctx context.Context, d *daemon.Daemon, t *system.Tunnel) {
+// watchTunnel restarts the tunnel when its engine exits on its own, and
+// when its upstream changes (Wi-Fi to Ethernet, another VPN connecting or
+// disconnecting), since Xray's outbounds are bound to it.
+func watchTunnel(ctx context.Context, d *daemon.Daemon, t *system.Tunnel, engineExits <-chan struct{}) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
+	var delay restartDelay
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-engineExits:
+			wait := delay.next(time.Now())
+			log.Printf("restarting the tunnel in %s", wait)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			if err := d.Restart("the engine exited", t.EngineExited); err != nil {
+				log.Printf("restart after the engine exited: %v", err)
+			}
+			continue
 		case <-tick.C:
 		}
 		bound := t.Interface()
@@ -521,8 +541,27 @@ func watchNetwork(ctx context.Context, d *daemon.Daemon, t *system.Tunnel) {
 		if err != nil || up.Interface == bound {
 			continue
 		}
-		if err := d.Restart(fmt.Sprintf("upstream moved from %s to %s", bound, up.Interface)); err != nil && !errors.Is(err, context.Canceled) {
+		reason := fmt.Sprintf("upstream moved from %s to %s", bound, up.Interface)
+		if err := d.Restart(reason, func() bool { return t.Interface() == bound }); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("restart after network change: %v", err)
 		}
 	}
+}
+
+// restartDelay spaces out restarts of an engine that keeps exiting: the
+// first restart is immediate, then the wait doubles up to a minute while
+// the engine dies within a minute of its last restart.
+type restartDelay struct {
+	last time.Time
+	wait time.Duration
+}
+
+func (r *restartDelay) next(now time.Time) time.Duration {
+	if r.last.IsZero() || now.Sub(r.last) > time.Minute {
+		r.wait = 0
+	} else {
+		r.wait = min(max(2*r.wait, time.Second), time.Minute)
+	}
+	r.last = now.Add(r.wait)
+	return r.wait
 }

@@ -259,3 +259,33 @@ func TestEventsAfterACursor(t *testing.T) {
 		t.Errorf("event kinds mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestRestartStartsTheRunningSpecAgain(t *testing.T) {
+	d, tun, _ := newDaemon(t)
+	connect(t, d, daemon.Request{Action: daemon.Connect, Spec: spec("tokyo")})
+	tun.Stop()
+	if err := d.Restart("the engine exited", func() bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if tun.Running() != "tokyo" {
+		t.Errorf("running %q after restart, want tokyo", tun.Running())
+	}
+	events := d.Events(0)
+	if last := events[len(events)-1]; last.Kind != "tunnel.restarted" || !strings.Contains(last.Message, "the engine exited") {
+		t.Errorf("last event = %+v, want a restart saying why", last)
+	}
+}
+
+// A watcher decides to restart from what it saw before the daemon shut
+// out other changes; by then the tunnel it saw may be replaced.
+func TestRestartLeavesATunnelThatNoLongerNeedsIt(t *testing.T) {
+	d, tun, _ := newDaemon(t)
+	connect(t, d, daemon.Request{Action: daemon.Connect, Spec: spec("tokyo")})
+	tun.Stop()
+	if err := d.Restart("the engine exited", func() bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if tun.Running() != "" {
+		t.Errorf("running %q, want the tunnel left alone", tun.Running())
+	}
+}

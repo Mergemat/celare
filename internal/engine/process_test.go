@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,6 +58,29 @@ func TestProcessCarriesTrafficAndExitsOnClose(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", socks), 300*time.Millisecond); err == nil {
 		c.Close()
 		t.Errorf("SOCKS port still open after Close")
+	}
+}
+
+// A child that dies on its own, as on a panic inside Xray, must say so:
+// its tunnel is dead until someone restarts it.
+func TestProcessReportsDyingOnItsOwn(t *testing.T) {
+	socks := freePort(t)
+	cfg := fmt.Sprintf(`{"inbounds":[{"listen":"127.0.0.1","port":%d,"protocol":"socks"}],"outbounds":[{"protocol":"freedom"}]}`, socks)
+	p, err := startProcess(t, []byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.Done():
+		t.Fatal("Done closed while the child runs")
+	default:
+	}
+	proc, _ := os.FindProcess(p.PID())
+	proc.Signal(syscall.SIGKILL)
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done still open 5s after the child died")
 	}
 }
 

@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Mergemat/celare/internal/config"
 	"github.com/Mergemat/celare/internal/daemon"
@@ -58,16 +59,31 @@ func (r *fakeRunner) dns(enabled bool) error {
 type fakeEngine struct {
 	configs []string
 	closed  int
+	last    *runningEngine
 }
 
-func (e *fakeEngine) start(cfg []byte) (io.Closer, error) {
+func (e *fakeEngine) start(cfg []byte) (system.Engine, error) {
 	e.configs = append(e.configs, string(cfg))
-	return closer(func() error { e.closed++; return nil }), nil
+	e.last = &runningEngine{onClose: func() { e.closed++ }, done: make(chan struct{})}
+	return e.last, nil
 }
 
-type closer func() error
+type runningEngine struct {
+	onClose func()
+	done    chan struct{}
+	once    sync.Once
+}
 
-func (c closer) Close() error { return c() }
+func (r *runningEngine) Close() error {
+	r.onClose()
+	r.crash()
+	return nil
+}
+
+// crash ends the engine without Close, as a panic would.
+func (r *runningEngine) crash() { r.once.Do(func() { close(r.done) }) }
+
+func (r *runningEngine) Done() <-chan struct{} { return r.done }
 
 func newTunnel(t *testing.T, r *fakeRunner, e *fakeEngine) (*system.Tunnel, string) {
 	t.Helper()
@@ -345,5 +361,49 @@ func TestFailedDNSCleanupKeepsRestoreFileForRetry(t *testing.T) {
 	}
 	if _, err := os.Stat(restore); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restore file remains: %v", err)
+	}
+}
+
+// An engine that dies leaves routes and DNS pointing at a dead utun, so
+// the tunnel must say so; closing it on purpose is no such news.
+func TestTunnelReportsAnEngineThatExitsOnItsOwn(t *testing.T) {
+	r := &fakeRunner{netstat: netstatOut}
+	e := &fakeEngine{}
+	tun, _ := newTunnel(t, r, e)
+	exits := make(chan struct{}, 1)
+	tun.OnEngineExit = func() { exits <- struct{}{} }
+
+	if err := tun.Start(tokyo); err != nil {
+		t.Fatal(err)
+	}
+	if tun.EngineExited() {
+		t.Fatal("engine reported exited while running")
+	}
+	e.last.crash()
+	select {
+	case <-exits:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the engine's exit was not reported")
+	}
+	if !tun.EngineExited() {
+		t.Error("EngineExited = false after the engine died")
+	}
+
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.Start(tokyo); err != nil {
+		t.Fatal(err)
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exits:
+		t.Error("stopping the tunnel was reported as the engine exiting")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if tun.EngineExited() {
+		t.Error("EngineExited = true while down")
 	}
 }
