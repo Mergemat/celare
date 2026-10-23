@@ -43,6 +43,27 @@ struct NodeTestsTests {
         #expect(model.busy == nil)
     }
 
+    @Test func openingTheMenuMeasuresOnlyOnceResultsAreStale() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let model = AppModel(cli: fixture.cli)
+        model.nodes = [node("fast")]
+        model.nodesLoaded = true
+        model.tunnel = Tunnel(state: "down", node: nil, since: .now, pending: nil,
+                              version: "test", lastNode: nil, system: nil)
+
+        await model.measureIfStale()
+        #expect(model.latency["fast"]?.latencyMs == 15)
+        #expect(model.notice == nil)
+
+        model.latency = [:]
+        await model.measureIfStale(now: .now.addingTimeInterval(AppModel.staleAfter - 5))
+        #expect(model.latency["fast"] == nil)
+
+        await model.measureIfStale(now: .now.addingTimeInterval(AppModel.staleAfter + 5))
+        #expect(model.latency["fast"]?.ok == true)
+    }
+
     private func node(_ name: String) -> NodeView {
         NodeView(name: name, source: "config", protocol: "trojan", address: "127.0.0.1",
                  port: 443, transport: "tcp", security: "tls")

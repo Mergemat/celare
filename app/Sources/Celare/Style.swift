@@ -62,6 +62,21 @@ struct PrimaryBarStyle: ButtonStyle {
     }
 }
 
+/// A lit band across the primary bar, as wide as the fraction: time left
+/// to Keep, or nodes measured so far.
+struct BarFill: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.12))
+                .frame(width: geo.size.width * fraction)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// A secondary button that is always raised (Revert, next to Keep).
 struct RaisedButtonStyle: ButtonStyle {
     var height: CGFloat = 30

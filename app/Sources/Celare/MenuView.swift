@@ -39,6 +39,11 @@ struct MenuView: View {
         .frame(maxHeight: live ? .infinity : nil, alignment: .top)
         .background { shortcuts }
         .onAppear { if live { model.start() } }
+        // The window is kept between openings; becoming key is the menu opening.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard live, let window = fitter.window, note.object as? NSWindow === window else { return }
+            Task { await model.measureIfStale() }
+        }
     }
 
     // MARK: hero: the chosen node and its state
@@ -48,14 +53,13 @@ struct MenuView: View {
     /// The tunnel's state, under the node's name.
     private var stateLabel: String {
         if model.connecting != nil { return "Connecting…" }
-        if model.findingFastest { return "Measuring \(model.nodes.count - model.testingNodes.count) of \(model.nodes.count)…" }
         if let busy = model.busy, ["Disconnecting…", "Keeping…", "Reverting…"].contains(busy) { return busy }
         if model.tunnel?.pending != nil { return "Waiting for you" }
         return isUp ? "Connected" : "Not connected"
     }
 
     private var stateColor: Color {
-        if model.connecting != nil || model.findingFastest || model.tunnel?.pending != nil { return .orange }
+        if model.connecting != nil || model.tunnel?.pending != nil { return .orange }
         return isUp ? Palette.blueDot : Color.secondary.opacity(0.5)
     }
 
@@ -76,8 +80,9 @@ struct MenuView: View {
                 title("celare can't run")
                 caption(f.message + (f.hint.map { ". " + $0 } ?? "")).textSelection(.enabled)
             case .ready:
+                // Without its subscription: the list already groups by it.
                 if let name = shownNode {
-                    NodeName(name: name, size: 17)
+                    title(model.nodes.first { $0.name == name }?.shortName ?? name).lineLimit(1)
                 } else {
                     title("Fastest node")
                 }
@@ -90,7 +95,7 @@ struct MenuView: View {
     /// connects to. nil means Connect measures every node first.
     private var shownNode: String? {
         if let name = model.connecting { return name }
-        if model.findingFastest { return nil }
+        if measuringToConnect { return nil }
         if isUp, let name = model.tunnel?.node { return name }
         return model.connectTarget
     }
@@ -100,7 +105,8 @@ struct MenuView: View {
             Circle().fill(stateColor).frame(width: 6, height: 6)
             if stateLabel == "Connected", let t = model.tunnel {
                 TimelineView(.periodic(from: .now, by: 15)) { context in
-                    Text("Connected " + Self.duration(from: t.since, to: context.date))
+                    let ms = t.node.flatMap { model.latency[$0] }.flatMap { $0.ok ? $0.latencyMs : nil }
+                    Text("Connected " + Self.duration(from: t.since, to: context.date) + (ms.map { " · \($0) ms" } ?? ""))
                 }
                 .help(t.system?.interface.map { "Leaves through \($0)" } ?? "")
             } else {
@@ -130,6 +136,11 @@ struct MenuView: View {
         return "for " + (f.string(from: seconds) ?? "")
     }
 
+    /// Connect has to wait for measurements to know which node is fastest.
+    private var measuringToConnect: Bool {
+        model.findingFastest || (!isUp && model.connectTarget == nil && !model.testingNodes.isEmpty)
+    }
+
     // MARK: the one loud control
 
     @ViewBuilder
@@ -144,11 +155,22 @@ struct MenuView: View {
         case .needsNodes:
             addField(prominent: true)
         case .ready:
-            if model.connecting != nil || model.findingFastest {
+            if model.connecting != nil {
                 // The status line says what's happening.
                 Button {} label: { Spinner(size: .small).tint(.white) }
                     .buttonStyle(PrimaryBarStyle())
                     .allowsHitTesting(false)
+            } else if measuringToConnect {
+                let done = model.testingTotal - model.testingNodes.count
+                Button {} label: {
+                    HStack(spacing: 6) {
+                        Text("Measuring")
+                        Text("\(done) of \(model.testingTotal)").font(.mono).opacity(0.75)
+                    }
+                }
+                .buttonStyle(PrimaryBarStyle())
+                .overlay(alignment: .leading) { BarFill(fraction: Double(done) / Double(max(model.testingTotal, 1))) }
+                .allowsHitTesting(false)
             } else if let pending = model.tunnel?.pending {
                 PendingBar(change: pending, model: model)
             } else if isUp {
@@ -162,7 +184,7 @@ struct MenuView: View {
                     }
                 } label: { Label("Connect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
-                    .disabled(model.busy != nil || (model.connectTarget == nil && !model.testingNodes.isEmpty))
+                    .disabled(model.busy != nil)
             }
             if model.serviceOutdated {
                 quietNote("The background service is older than this app.", action: "Update") {
@@ -324,12 +346,12 @@ struct MenuView: View {
                 }
                 ForEach(group.nodes) { node in
                     NodeRow(node: node,
-                            shortened: group.subscription != nil,
                             chosen: shownNode == node.name,
                             connected: isUp,
                             connecting: model.connecting == node.name,
                             testing: model.testingNodes.contains(node.name),
                             result: model.latency[node.name],
+                            fastest: model.fastest?.node == node.name,
                             model: model)
                         .disabled(model.busy != nil || model.connecting != nil)
                 }

@@ -90,6 +90,7 @@ enum Snapshot {
             model.findingFastest = true
             model.latency = ["main/Tokyo": measured["main/Tokyo"]!]
             model.testingNodes = ["main/Osaka", "home"]
+            model.testingTotal = 3
         case "remove":
             model.tunnel = tunnel(up: true)
             model.nodes = nodes

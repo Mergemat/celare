@@ -1,22 +1,5 @@
 import SwiftUI
 
-/// "main/Tokyo" with the subscription part dimmed.
-struct NodeName: View {
-    let name: String
-    var size: CGFloat = 12.5
-
-    var body: some View {
-        let parts = name.split(separator: "/", maxSplits: 1).map(String.init)
-        if parts.count == 2 {
-            (Text(parts[0] + "/").foregroundStyle(.secondary) + Text(parts[1]))
-                .font(.system(size: size, weight: size > 14 ? .semibold : .medium))
-                .lineLimit(1)
-        } else {
-            Text(name).font(.system(size: size, weight: size > 14 ? .semibold : .medium)).lineLimit(1)
-        }
-    }
-}
-
 /// A subscription's name with what the panel reports about it: traffic
 /// used, the quota and when it runs out.
 struct GroupHeader: View {
@@ -89,25 +72,24 @@ struct GroupHeader: View {
 /// The trailing column says how fast it was.
 struct NodeRow: View {
     let node: NodeView
-    /// Under its subscription's heading, so the prefix goes.
-    let shortened: Bool
     /// The node the hero names.
     let chosen: Bool
     let connected: Bool
     let connecting: Bool
     let testing: Bool
     let result: TestResult?
+    /// Its time is the best one measured.
+    let fastest: Bool
     let model: AppModel
 
     var body: some View {
         Button { Task { await model.choose(node.name) } } label: {
             HStack(spacing: 8) {
                 leading.frame(width: 8, height: 8)
-                if shortened {
-                    Text(node.shortName).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
-                } else {
-                    NodeName(name: node.name)
-                }
+                // Under its subscription's heading, so the prefix goes.
+                Text(node.shortName).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                    // A node that didn't answer is one to skip, not an error.
+                    .foregroundStyle(result?.ok == false ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
                 Spacer(minLength: 6)
                 trailing
             }
@@ -142,16 +124,17 @@ struct NodeRow: View {
         }
     }
 
+    /// The protocol is in the tooltip; this column is for speed.
     @ViewBuilder
     private var trailing: some View {
-        if testing {
+        if let result {
+            Text(result.ok ? "\(result.latencyMs ?? 0) ms" : "no answer")
+                .font(.mono)
+                .foregroundStyle(!result.ok ? AnyShapeStyle(.tertiary) : fastest ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                // Last time's figure, faded while it's measured again.
+                .opacity(testing ? 0.4 : 1)
+        } else if testing {
             Spinner().scaleEffect(0.8).frame(height: 12)
-        } else if let result, result.ok {
-            Text("\(result.latencyMs ?? 0) ms").font(.mono).foregroundStyle(.secondary)
-        } else if result != nil {
-            Text("no answer").font(.mono).foregroundStyle(Color.red.opacity(0.85))
-        } else {
-            Text(Names.protocol(node.protocol)).font(.system(size: 11)).foregroundStyle(.tertiary)
         }
     }
 

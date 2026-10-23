@@ -18,15 +18,7 @@ struct PendingBar: View {
                         }
                     }
                     .buttonStyle(PrimaryBarStyle())
-                    .overlay(alignment: .leading) {
-                        // The time left, as a lit band that shrinks.
-                        GeometryReader { geo in
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.12))
-                                .frame(width: geo.size.width * left.fraction)
-                        }
-                        .allowsHitTesting(false)
-                    }
+                    .overlay(alignment: .leading) { BarFill(fraction: left.fraction) }
                     Button("Revert") { Task { await model.revert(change.id) } }
                         .buttonStyle(RaisedButtonStyle())
                 }

@@ -42,6 +42,12 @@ final class AppModel {
     var serviceMissing = false
     var latency: [String: TestResult] = [:]
     var testingNodes: Set<String> = []
+    /// How many nodes the measurement in progress started with.
+    var testingTotal = 0
+    /// When every node was last measured. Opening the menu measures again
+    /// once this is older than `staleAfter`.
+    var measuredAt: Date?
+    static let staleAfter: TimeInterval = 600
     var busy: String?
     /// The node a connect is in progress for, shown while it runs.
     var connecting: String?
@@ -281,12 +287,23 @@ final class AppModel {
     func confirm(_ id: String) async { await perform("Keeping…", ["confirm", id]) }
     func revert(_ id: String) async { await perform("Reverting…", ["revert", id]) }
 
-    /// Measures the given nodes, every node by default.
-    func testNodes(_ only: [String]? = nil) async {
+    /// Measures every node when the menu opens and the last results are
+    /// old, so rows show speed without anyone asking.
+    func measureIfStale(now: Date = .now) async {
+        guard phase == .ready, connecting == nil else { return }
+        if let measuredAt, now.timeIntervalSince(measuredAt) < Self.staleAfter { return }
+        await testNodes(quietly: true)
+    }
+
+    /// Measures the given nodes, every node by default. Quietly skips the
+    /// "2 of 3 answered" notice.
+    func testNodes(_ only: [String]? = nil, quietly: Bool = false) async {
         guard busy == nil, testingNodes.isEmpty else { return }
         let names = only ?? nodes.map(\.name)
         guard !names.isEmpty else { return }
+        if only == nil { measuredAt = .now }
         testingNodes = Set(names)
+        testingTotal = names.count
         defer { testingNodes = [] }
         await cli.testNodes(names) { [weak self] result in
             self?.latency[result.node] = result
@@ -295,7 +312,7 @@ final class AppModel {
         let results = names.compactMap { latency[$0] }
         let answered = results.filter(\.ok)
         // One node's result shows on its row.
-        if names.count > 1 {
+        if names.count > 1, !quietly {
             say(answered.isEmpty ? "None of \(results.count) answered" : "\(answered.count) of \(results.count) answered")
         }
     }
