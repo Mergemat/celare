@@ -27,9 +27,8 @@ struct GroupHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(group.subscription ?? "")
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if let usage = subscription?.usage {
@@ -86,22 +85,22 @@ struct GroupHeader: View {
     }
 }
 
-/// A node: click to connect. The trailing column says how fast it was,
-/// and what a click would do while the pointer is on it.
+/// A node: click to choose it, and while connected the tunnel follows.
+/// The trailing column says how fast it was.
 struct NodeRow: View {
     let node: NodeView
     /// Under its subscription's heading, so the prefix goes.
     let shortened: Bool
-    let active: Bool
+    /// The node the hero names.
+    let chosen: Bool
+    let connected: Bool
     let connecting: Bool
     let testing: Bool
     let result: TestResult?
     let model: AppModel
-    @State private var hovering = false
-    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
-        Button { Task { await model.connect(node.name) } } label: {
+        Button { Task { await model.choose(node.name) } } label: {
             HStack(spacing: 8) {
                 leading.frame(width: 8, height: 8)
                 if shortened {
@@ -116,10 +115,9 @@ struct NodeRow: View {
             .frame(maxWidth: .infinity, minHeight: 16, maxHeight: 16, alignment: .leading)
         }
         .buttonStyle(HoverRaiseStyle(radius: 7, horizontal: 8, vertical: 6))
-        .onHover { hovering = $0 }
         .help(tooltip)
         .contextMenu {
-            Button(active ? "Reconnect" : "Connect") { Task { await model.connect(node.name) } }
+            Button(chosen && connected ? "Reconnect" : "Connect") { Task { await model.connect(node.name) } }
             Button("Measure") { Task { await model.testNodes([node.name]) } }
                 .disabled(!model.testingNodes.isEmpty)
             Divider()
@@ -139,39 +137,21 @@ struct NodeRow: View {
         if connecting {
             Spinner().scaleEffect(0.7)
         } else {
-            Circle().fill(active ? Palette.blueDot : Color.clear).frame(width: 6, height: 6)
+            Circle().fill(chosen ? (connected ? Palette.blueDot : Color.secondary.opacity(0.5)) : Color.clear)
+                .frame(width: 6, height: 6)
         }
     }
 
     @ViewBuilder
     private var trailing: some View {
-        if hovering && isEnabled && !testing {
-            Text(active ? "Reconnect" : "Connect")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Palette.blueDot)
-        } else if testing {
+        if testing {
             Spinner().scaleEffect(0.8).frame(height: 12)
         } else if let result, result.ok {
-            HStack(spacing: 5) {
-                Image(systemName: "cellularbars", variableValue: Self.strength(result.latencyMs ?? 0))
-                    .font(.system(size: 10))
-                Text("\(result.latencyMs ?? 0) ms").font(.mono)
-            }
-            .foregroundStyle(.secondary)
+            Text("\(result.latencyMs ?? 0) ms").font(.mono).foregroundStyle(.secondary)
         } else if result != nil {
             Text("no answer").font(.mono).foregroundStyle(Color.red.opacity(0.85))
         } else {
             Text(Names.protocol(node.protocol)).font(.system(size: 11)).foregroundStyle(.tertiary)
-        }
-    }
-
-    /// Four bars under 150 ms, one past 600.
-    static func strength(_ ms: Int) -> Double {
-        switch ms {
-        case ..<150: 1
-        case ..<300: 0.75
-        case ..<600: 0.5
-        default: 0.25
         }
     }
 

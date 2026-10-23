@@ -53,6 +53,8 @@ final class AppModel {
     /// What the last action did, shown for a few seconds.
     var notice: String?
     var removal: Removal?
+    /// The node picked in the list; Connect connects to it.
+    var chosen: String?
     var sortBySpeed = false
     /// The bundled CLI's version; the daemon should match it.
     var appVersion: String?
@@ -71,10 +73,12 @@ final class AppModel {
         return nodes.isEmpty ? .needsNodes : .ready
     }
 
-    /// What Connect connects to: the last node if it still exists, else
-    /// the only node there is, else the fastest one measured. nil means
-    /// Connect measures every node first.
+    /// What Connect connects to: the node picked in the list, else the
+    /// last node, else the only node there is, else the fastest one
+    /// measured. Picks that no longer exist are skipped. nil means Connect
+    /// measures every node first.
     var connectTarget: String? {
+        if let chosen, nodes.contains(where: { $0.name == chosen }) { return chosen }
         if let last = tunnel?.lastNode, nodes.contains(where: { $0.name == last }) { return last }
         if nodes.count == 1 { return nodes[0].name }
         return fastest?.node
@@ -240,11 +244,21 @@ final class AppModel {
         return name
     }
 
+    /// Picks a node for Connect. While connected, the tunnel moves to it.
+    func choose(_ node: String) async {
+        chosen = node
+        guard tunnel?.isUp == true, tunnel?.node != node else { return }
+        await connect(node)
+    }
+
     /// Humans get a probe rather than a confirm window: if the node can't
     /// reach the internet, the daemon puts the previous tunnel back.
     func connect(_ node: String?) async {
         var args = ["connect", "--probe", "https://www.gstatic.com/generate_204"]
-        if let node { args.insert(node, at: 1) }
+        if let node {
+            args.insert(node, at: 1)
+            chosen = node
+        }
         connecting = node ?? connectTarget
         defer { connecting = nil }
         await perform("Connecting…", args)

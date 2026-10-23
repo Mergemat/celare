@@ -19,7 +19,7 @@ struct MenuLogicTests {
         ])
     }
 
-    @Test func connectPrefersTheLastNodeThenTheFastestMeasured() {
+    @Test func connectPrefersThePickedNodeThenTheLastThenTheFastestMeasured() {
         let model = AppModel(cli: CLI(binary: URL(fileURLWithPath: "/nonexistent")))
         model.nodes = [node("a"), node("b"), node("c")]
         model.tunnel = tunnel(last: nil)
@@ -37,6 +37,22 @@ struct MenuLogicTests {
 
         model.tunnel = tunnel(last: "gone")
         #expect(model.connectTarget == "c")
+
+        model.tunnel = tunnel(last: "a")
+        model.chosen = "b"
+        #expect(model.connectTarget == "b")
+
+        model.chosen = "removed"
+        #expect(model.connectTarget == "a")
+    }
+
+    @Test func pickingANodeWhileDisconnectedDoesNotConnect() async {
+        let model = AppModel(cli: CLI(binary: URL(fileURLWithPath: "/nonexistent")))
+        model.nodes = [node("a"), node("b")]
+        model.tunnel = tunnel(last: "a")
+        await model.choose("b")
+        #expect(model.connectTarget == "b")
+        #expect(model.busy == nil && model.error == nil)
     }
 
     @Test func linkNodesComeFirstAndSpeedSortPutsSilentNodesLast() {

@@ -62,13 +62,10 @@
 
   /* The app's menu, as the second container. */
   .menu { display: flex; flex-direction: column; padding: 16px; font-size: 12.5px; }
-  .menu .top { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 14px; }
-  .menu .top svg { width: 11px; height: 11px; color: var(--blue-dot); }
-  .menu .state { margin-left: auto; font-weight: 400; display: flex; align-items: center; gap: 6px; }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
   .menu .node { font-size: 17px; font-weight: 600; }
   .dim { color: var(--muted); }
-  .menu .meta { font-size: 11.5px; color: var(--muted); margin: 3px 0 14px; }
+  .menu .meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); margin: 3px 0 14px; }
   .pending { display: flex; gap: 6px; }
   .keep { flex: 1; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; cursor: default; }
   .keep::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 100%; background: rgba(255,255,255,.13); animation: drain 60s linear infinite; }
@@ -81,13 +78,11 @@
     box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 0 0 .5px rgba(0,0,0,.14), 0 1px 1.5px rgba(0,0,0,.12);
   }
   .menu .hint { font-size: 11px; color: var(--muted); margin: 7px 0 16px; }
-  .menu .label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-weight: 500; }
   .row .ms { margin-left: auto; display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); font-weight: 400; }
-  .row .ms svg { width: 11px; height: 9px; }
   .row .fail { color: rgba(230,55,45,.85); }
   .group { display: flex; justify-content: space-between; gap: 8px; margin: 8px 0 2px; font-size: 10.5px; color: #A1A1A6; }
-  .group b { font-weight: 600; text-transform: uppercase; }
+  .group b { font-size: 11px; font-weight: 600; color: var(--muted); }
   .menu .icons { display: flex; gap: 14px; margin-top: auto; padding-top: 12px; color: var(--muted); }
   .menu .icons svg { width: 13px; height: 13px; }
   .menu .icons svg:last-child { margin-left: auto; }
@@ -147,20 +142,17 @@
     </section>
 
     <aside class="card menu" aria-label="The celare menu while a change waits for confirmation">
-      <div class="top"><svg><use href="#mark"/></svg>celare
-        <span class="state"><span class="dot" style="background:#F2A33A"></span>Waiting for you</span></div>
       <div class="node"><span class="dim">main/</span>Tokyo</div>
-      <div class="meta">Connected for 32 min · VLESS · XHTTP · REALITY</div>
+      <div class="meta"><span class="dot" style="background:#F2A33A"></span>Waiting for you</div>
       <div class="pending">
         <div class="keep bar-primary"><span>Keep</span><i id="left">60s</i></div>
         <div class="raised">Revert</div>
       </div>
       <div class="hint">A trial change from the CLI. Unless you keep it, celare goes back to main/Osaka.</div>
-      <div class="label">Nodes</div>
-      <div class="row"><span class="dot"></span><span>home</span><span class="ms"><svg viewBox="0 0 11 9" fill="currentColor" aria-hidden="true"><rect x="0" y="6" width="2" height="3" rx=".6" opacity="1"/><rect x="3" y="4" width="2" height="5" rx=".6" opacity="1"/><rect x="6" y="2" width="2" height="7" rx=".6" opacity="1"/><rect x="9" y="0" width="2" height="9" rx=".6" opacity="1"/></svg> 97 ms</span></div>
+      <div class="row"><span class="dot"></span><span>home</span><span class="ms">97 ms</span></div>
       <div class="group"><b>main</b><span>7.36 GB of 50 GB · 12 days left</span></div>
-      <div class="row"><span class="dot" style="background:var(--blue-dot)"></span><span>Tokyo</span><span class="ms"><svg viewBox="0 0 11 9" fill="currentColor" aria-hidden="true"><rect x="0" y="6" width="2" height="3" rx=".6" opacity="1"/><rect x="3" y="4" width="2" height="5" rx=".6" opacity="1"/><rect x="6" y="2" width="2" height="7" rx=".6" opacity="1"/><rect x="9" y="0" width="2" height="9" rx=".6" opacity="1"/></svg> 142 ms</span></div>
-      <div class="row"><span class="dot"></span><span>Osaka</span><span class="ms"><svg viewBox="0 0 11 9" fill="currentColor" aria-hidden="true"><rect x="0" y="6" width="2" height="3" rx=".6" opacity="1"/><rect x="3" y="4" width="2" height="5" rx=".6" opacity="1"/><rect x="6" y="2" width="2" height="7" rx=".6" opacity="0.3"/><rect x="9" y="0" width="2" height="9" rx=".6" opacity="0.3"/></svg> 388 ms</span></div>
+      <div class="row"><span class="dot" style="background:var(--blue-dot)"></span><span>Tokyo</span><span class="ms">142 ms</span></div>
+      <div class="row"><span class="dot"></span><span>Osaka</span><span class="ms">388 ms</span></div>
       <div class="icons" aria-hidden="true">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.5v3h-3"/></svg>

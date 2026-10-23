@@ -14,7 +14,6 @@ struct MenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            topLine.padding(.bottom, 14)
             hero.padding(.bottom, 14)
             action
             if let removal = model.removal {
@@ -24,7 +23,7 @@ struct MenuView: View {
                 ErrorNote(failure: error) { model.error = nil }.padding(.top, 10)
             }
             if model.phase == .ready {
-                nodes.padding(.top, 16)
+                nodes.padding(.top, 14)
             }
             footer.padding(.top, 10)
         }
@@ -42,48 +41,23 @@ struct MenuView: View {
         .onAppear { if live { model.start() } }
     }
 
-    // MARK: top line: wordmark and state
-
-    private var topLine: some View {
-        HStack(spacing: 6) {
-            MarkView(dot: isUp)
-                .foregroundStyle(isUp ? AnyShapeStyle(Palette.blueDot) : AnyShapeStyle(.secondary))
-                .frame(width: 12, height: 12)
-            Text("celare").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            Spacer()
-            Circle().fill(stateColor).frame(width: 6, height: 6)
-            Text(stateLabel).font(.system(size: 11)).foregroundStyle(.secondary)
-        }
-    }
+    // MARK: hero: the chosen node and its state
 
     private var isUp: Bool { model.tunnel?.isUp == true }
 
+    /// The tunnel's state, under the node's name.
     private var stateLabel: String {
-        if model.connecting != nil { return "Connecting" }
-        if model.findingFastest { return "Measuring" }
-        if let busy = model.busy { return busy }
-        switch model.phase {
-        case .loading: return "Checking"
-        case .needsService: return "Not set up"
-        case .broken: return "Error"
-        case .needsNodes, .ready:
-            if model.tunnel?.pending != nil { return "Waiting for you" }
-            return isUp ? "Connected" : "Off"
-        }
+        if model.connecting != nil { return "Connecting…" }
+        if model.findingFastest { return "Measuring \(model.nodes.count - model.testingNodes.count) of \(model.nodes.count)…" }
+        if let busy = model.busy, ["Disconnecting…", "Keeping…", "Reverting…"].contains(busy) { return busy }
+        if model.tunnel?.pending != nil { return "Waiting for you" }
+        return isUp ? "Connected" : "Not connected"
     }
 
     private var stateColor: Color {
-        if model.connecting != nil || model.findingFastest { return .orange }
-        switch model.phase {
-        case .broken: return .red
-        case .needsService: return .orange
-        default:
-            if model.tunnel?.pending != nil { return .orange }
-            return isUp ? Palette.blueDot : Color.secondary.opacity(0.5)
-        }
+        if model.connecting != nil || model.findingFastest || model.tunnel?.pending != nil { return .orange }
+        return isUp ? Palette.blueDot : Color.secondary.opacity(0.5)
     }
-
-    // MARK: hero: what is happening, once
 
     @ViewBuilder
     private var hero: some View {
@@ -102,24 +76,39 @@ struct MenuView: View {
                 title("celare can't run")
                 caption(f.message + (f.hint.map { ". " + $0 } ?? "")).textSelection(.enabled)
             case .ready:
-                if let name = model.connecting {
+                if let name = shownNode {
                     NodeName(name: name, size: 17)
-                    caption("Starting the tunnel and checking that traffic gets through…")
-                } else if model.findingFastest {
-                    title("Finding the fastest node")
-                    caption("\(model.nodes.count - model.testingNodes.count) of \(model.nodes.count) measured…")
-                } else if let t = model.tunnel, t.isUp, let name = t.node {
-                    NodeName(name: name, size: 17)
-                    TimelineView(.periodic(from: .now, by: 15)) { context in
-                        caption(connectedDetail(t, name: name, now: context.date))
-                    }
-                    .help(model.tunnel?.system?.interface.map { "Leaves through \($0)" } ?? "")
                 } else {
-                    title("Not connected")
-                    caption(downDetail)
+                    title("Fastest node")
                 }
+                status
             }
         }
+    }
+
+    /// The node the hero names: the one in use, else the one Connect
+    /// connects to. nil means Connect measures every node first.
+    private var shownNode: String? {
+        if let name = model.connecting { return name }
+        if model.findingFastest { return nil }
+        if isUp, let name = model.tunnel?.node { return name }
+        return model.connectTarget
+    }
+
+    private var status: some View {
+        HStack(spacing: 6) {
+            Circle().fill(stateColor).frame(width: 6, height: 6)
+            if stateLabel == "Connected", let t = model.tunnel {
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    Text("Connected " + Self.duration(from: t.since, to: context.date))
+                }
+                .help(t.system?.interface.map { "Leaves through \($0)" } ?? "")
+            } else {
+                Text(stateLabel)
+            }
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(.secondary)
     }
 
     private func title(_ text: String) -> some View {
@@ -128,12 +117,6 @@ struct MenuView: View {
 
     private func caption(_ text: String) -> some View {
         Text(text).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func connectedDetail(_ tunnel: Tunnel, name: String, now: Date) -> String {
-        var parts = ["Connected " + Self.duration(from: tunnel.since, to: now)]
-        if let node = model.nodes.first(where: { $0.name == name }) { parts.append(node.summary) }
-        return parts.joined(separator: " · ")
     }
 
     /// "just now", "for 4 min", "for 2 h 5 min".
@@ -145,21 +128,6 @@ struct MenuView: View {
         f.allowedUnits = seconds >= 86400 ? [.day, .hour] : [.hour, .minute]
         f.maximumUnitCount = 2
         return "for " + (f.string(from: seconds) ?? "")
-    }
-
-    private var downDetail: String {
-        guard let target = model.connectTarget else {
-            return "Pick a node below, or let celare measure them and pick the fastest."
-        }
-        if target == model.tunnel?.lastNode { return "Last used: \(target)." }
-        if model.nodes.count == 1 { return "One node, ready to go." }
-        if let best = model.fastest, best.node == target { return "Fastest right now: \(target), \(best.latencyMs ?? 0) ms." }
-        return "Connect, or pick another node below."
-    }
-
-    /// "main/Tokyo" → "Tokyo": the bar has no room for the prefix.
-    private func shortName(_ name: String) -> String {
-        name.split(separator: "/", maxSplits: 1).last.map(String.init) ?? name
     }
 
     // MARK: the one loud control
@@ -177,30 +145,24 @@ struct MenuView: View {
             addField(prominent: true)
         case .ready:
             if model.connecting != nil || model.findingFastest {
-                Button {} label: {
-                    HStack(spacing: 8) {
-                        Spinner(size: .small).tint(.white)
-                        Text(model.findingFastest ? "Measuring…" : "Connecting…")
-                    }
-                }
-                .buttonStyle(PrimaryBarStyle())
-                .allowsHitTesting(false)
+                // The status line says what's happening.
+                Button {} label: { Spinner(size: .small).tint(.white) }
+                    .buttonStyle(PrimaryBarStyle())
+                    .allowsHitTesting(false)
             } else if let pending = model.tunnel?.pending {
                 PendingBar(change: pending, model: model)
             } else if isUp {
                 Button { Task { await model.disconnect() } } label: { Label("Disconnect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
                     .disabled(model.busy != nil)
-            } else if let target = model.connectTarget {
-                Button { Task { await model.connect(target) } } label: {
-                    Label("Connect to \(shortName(target))", systemImage: "power")
-                }
-                .buttonStyle(PrimaryBarStyle())
-                .disabled(model.busy != nil)
             } else {
-                Button { Task { await model.connectFastest() } } label: { Label("Connect to the fastest", systemImage: "bolt.fill") }
+                Button {
+                    Task {
+                        if let target = model.connectTarget { await model.connect(target) } else { await model.connectFastest() }
+                    }
+                } label: { Label("Connect", systemImage: "power") }
                     .buttonStyle(PrimaryBarStyle())
-                    .disabled(model.busy != nil || !model.testingNodes.isEmpty)
+                    .disabled(model.busy != nil || (model.connectTarget == nil && !model.testingNodes.isEmpty))
             }
             if model.serviceOutdated {
                 quietNote("The background service is older than this app.", action: "Update") {
@@ -312,24 +274,6 @@ struct MenuView: View {
 
     private var nodes: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Nodes").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Spacer()
-                if model.latency.values.filter(\.ok).count >= 2 {
-                    Button { model.sortBySpeed.toggle() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.arrow.down").font(.system(size: 9, weight: .semibold))
-                            Text(model.sortBySpeed ? "Fastest first" : "In order")
-                        }
-                    }
-                    .buttonStyle(HoverRaiseStyle(horizontal: 6, vertical: 2))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .help(model.sortBySpeed ? "Show nodes in config order" : "Put the quickest nodes on top")
-                        .padding(.trailing, -6)
-                }
-            }
-            .frame(height: 18)
             if adding { addField(prominent: false).padding(.bottom, 8) }
             if model.nodes.count > 8 { search.padding(.bottom, 2) }
             let groups = model.groups(matching: filter)
@@ -369,7 +313,7 @@ struct MenuView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
     }
 
-    /// Nodes added by link sit right under "Nodes"; each subscription gets
+    /// Nodes added by link come first; each subscription gets
     /// a heading with what its panel reports.
     private func rows(_ groups: [NodeGroup]) -> some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -381,7 +325,8 @@ struct MenuView: View {
                 ForEach(group.nodes) { node in
                     NodeRow(node: node,
                             shortened: group.subscription != nil,
-                            active: isUp && model.tunnel?.node == node.name,
+                            chosen: shownNode == node.name,
+                            connected: isUp,
                             connecting: model.connecting == node.name,
                             testing: model.testingNodes.contains(node.name),
                             result: model.latency[node.name],
@@ -428,6 +373,7 @@ struct MenuView: View {
                         NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
                         model.say("Copied \(model.cli.binary.path)")
                     }
+                    Toggle("Sort by Speed", isOn: $model.sortBySpeed)
                     Toggle("Open at Login", isOn: $model.opensAtLogin)
                     Divider()
                     Button("Quit celare") { NSApplication.shared.terminate(nil) }

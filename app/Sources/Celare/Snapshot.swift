@@ -70,6 +70,11 @@ enum Snapshot {
         case "down":
             model.tunnel = tunnel(up: false)
             model.nodes = nodes
+        case "chosen":
+            model.tunnel = tunnel(up: false)
+            model.nodes = nodes
+            model.latency = measured
+            model.chosen = "main/Osaka"
         case "fresh":
             model.tunnel = tunnel(up: false, last: nil)
             model.nodes = nodes
