@@ -37,7 +37,6 @@ struct MenuView: View {
         // Pinned to the top, so a window a pass behind its content shows
         // still space at the bottom rather than everything sliding.
         .frame(maxHeight: live ? .infinity : nil, alignment: .top)
-        .background { shortcuts }
         .onAppear { if live { model.start() } }
         // The window is kept between openings; becoming key is the menu opening.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
@@ -364,15 +363,15 @@ struct MenuView: View {
     private var footer: some View {
         HStack(spacing: 2) {
             if model.phase == .ready {
-                footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add nodes", key: "n") {
+                footerIcon(adding ? "xmark" : "plus", help: adding ? "Cancel" : "Add nodes") {
                     adding ? closeAdding() : openAdding()
                 }
                 if !model.subscriptions.isEmpty {
-                    footerIcon("arrow.clockwise", help: "Update subscriptions", key: "r", working: model.busy == "Updating…") {
+                    footerIcon("arrow.clockwise", help: "Update subscriptions", working: model.busy == "Updating…") {
                         Task { await model.updateSubscriptions() }
                     }
                 }
-                footerIcon("gauge.with.needle", help: "Measure every node", key: "t", working: !model.testingNodes.isEmpty) {
+                footerIcon("gauge.with.needle", help: "Measure every node", working: !model.testingNodes.isEmpty) {
                     Task { await model.testNodes() }
                 }
                 .disabled(!model.testingNodes.isEmpty)
@@ -389,7 +388,6 @@ struct MenuView: View {
             if live {
                 Menu {
                     Button("Open config.toml") { Task { await model.openConfig() } }
-                        .keyboardShortcut(",")
                     Button("Copy CLI path") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(model.cli.binary.path, forType: .string)
@@ -399,7 +397,6 @@ struct MenuView: View {
                     Toggle("Open at Login", isOn: $model.opensAtLogin)
                     Divider()
                     Button("Quit celare") { NSApplication.shared.terminate(nil) }
-                        .keyboardShortcut("q")
                 } label: {
                     footerGlyph("ellipsis")
                 }
@@ -427,7 +424,7 @@ struct MenuView: View {
             .frame(width: 16, height: 16)
     }
 
-    private func footerIcon(_ symbol: String, help: String, key: KeyEquivalent, working: Bool = false,
+    private func footerIcon(_ symbol: String, help: String, working: Bool = false,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             if working {
@@ -437,29 +434,7 @@ struct MenuView: View {
             }
         }
         .buttonStyle(HoverRaiseStyle(horizontal: 7, vertical: 5))
-        .keyboardShortcut(key)
-        .onHover { hint = $0 ? "\(help)  ⌘\(key.character.uppercased())" : nil }
-    }
-
-    /// Shortcuts that work whenever the menu is open, without a visible
-    /// control of their own.
-    private var shortcuts: some View {
-        Group {
-            Button("") { Task { await model.openConfig() } }.keyboardShortcut(",")
-            Button("") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
-            // Escape backs out of whatever is open; with nothing open it
-            // falls through and closes the menu.
-            if adding || !filter.isEmpty || model.removal != nil || model.error != nil {
-                Button("") {
-                    if model.removal != nil { model.removal = nil } else if adding { closeAdding() }
-                    else if !filter.isEmpty { filter = "" } else { model.error = nil }
-                }
-                .keyboardShortcut(.cancelAction)
-            }
-        }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .allowsHitTesting(false)
+        .onHover { hint = $0 ? help : nil }
     }
 }
 
