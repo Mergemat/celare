@@ -6,6 +6,7 @@
 #   make release   dist/Celare-<version>.zip, dist/celare-<version>-darwin.tar.gz, checksums
 #   make run       build the app and open it
 #   make icon      redraw app/AppIcon.icns from the mark in app/Sources/Celare/Mark.swift
+#   make og        redraw site/og.png, the social card, from site/og.html
 #
 # site/ deploys to celare.omarov.sh on every push to main, through Vercel's
 # GitHub integration.
@@ -15,7 +16,7 @@ LDFLAGS := -s -w -X github.com/Mergemat/celare/internal/cli.Version=$(VERSION)
 DIST    := dist
 APP     := $(DIST)/Celare.app
 
-.PHONY: test cli app release run icon clean
+.PHONY: test cli app release run icon og clean
 
 test:
 	go test ./...
@@ -50,6 +51,9 @@ release: app
 
 run: app
 	open $(APP)
+
+og:
+	bunx playwright screenshot --viewport-size 1200,630 --wait-for-timeout 800 file://$(CURDIR)/site/og.html site/og.png
 
 icon:
 	cd app && swift build -c release
