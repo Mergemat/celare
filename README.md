@@ -41,4 +41,4 @@ make run    # build and open the app
 
 ## License
 
-MIT
+GPL-3.0-or-later
