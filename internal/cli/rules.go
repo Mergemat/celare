@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
+	"slices"
 	"strings"
 
 	"github.com/Mergemat/celare/internal/config"
 	"github.com/Mergemat/celare/internal/engine"
-	"github.com/Mergemat/celare/internal/node"
-	"github.com/Mergemat/celare/internal/xrayconf"
 	"github.com/spf13/cobra"
 )
 
@@ -141,6 +139,15 @@ func (a *app) rulesAddCmd() *cobra.Command {
 					return failure("config_edit_failed", err.Error(), "")
 				}
 			}
+			if cfg, err := a.loadConfig(); err == nil {
+				switch {
+				case dryRun && first:
+					cfg.Rules = slices.Insert(cfg.Rules, 0, rule)
+				case dryRun:
+					cfg.Rules = append(cfg.Rules, rule)
+				}
+				a.warnings = a.dnsWarnings(cfg)
+			}
 			return a.ok(map[string]any{"rule": rule, "first": first, "dryRun": dryRun}, func(w io.Writer) {
 				fmt.Fprintf(w, "added rule %s\n", ruleSummary(rule))
 			}, "celare apply --dry-run", "celare apply --confirm 30s")
@@ -205,17 +212,7 @@ target, pass the domain the app sends with --domain.`,
 			if problems := cfg.Check(); len(problems) > 0 {
 				return &apiError{Code: "config_invalid", Message: "config.toml has problems", Problems: problems, Hint: "fix them and run `celare config check`"}
 			}
-			def := cfg.Default
-			if def == "" {
-				def = config.Proxy
-			}
-			xray, err := xrayconf.Config(xrayconf.Plan{
-				// Routing doesn't depend on the node; any valid one will do.
-				Node:    node.Node{Protocol: "trojan", Address: "127.0.0.1", Port: 1, Password: "x"},
-				Default: def,
-				Rules:   cfg.Rules,
-				TUN:     &xrayconf.TUN{Name: "utun99", MTU: 1500},
-			})
+			xray, err := routingConfig(cfg)
 			if err != nil {
 				return failure("config_invalid", err.Error(), "")
 			}
@@ -225,10 +222,8 @@ target, pass the domain the app sends with --domain.`,
 				return failure("explain_failed", err.Error(), "")
 			}
 			ex := explanation{Decision: d, Action: config.Action(d.Outbound)}
-			if pos, ok := strings.CutPrefix(d.RuleTag, "rule-"); ok {
-				if i, err := strconv.Atoi(pos); err == nil && i >= 1 && i <= len(cfg.Rules) {
-					ex.Rule = &ruleView{Position: i, Rule: cfg.Rules[i-1]}
-				}
+			if i, ok := rulePosition(d.RuleTag, cfg.Rules); ok {
+				ex.Rule = &ruleView{Position: i, Rule: cfg.Rules[i-1]}
 			}
 			return a.ok(ex, func(w io.Writer) {
 				by := "the default"

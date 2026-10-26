@@ -96,10 +96,11 @@ func (h *harness) run(args ...string) (code int, stdout, stderr string) {
 }
 
 type envelope struct {
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data"`
-	Next  []string        `json:"next"`
-	Error *api.Error      `json:"error"`
+	OK       bool            `json:"ok"`
+	Data     json.RawMessage `json:"data"`
+	Next     []string        `json:"next"`
+	Warnings []string        `json:"warnings"`
+	Error    *api.Error      `json:"error"`
 }
 
 // runJSON runs with --json and checks stdout is exactly one JSON document.
@@ -277,6 +278,38 @@ func TestRulesExplainReadsGeoListsFromTheConfigDir(t *testing.T) {
 	json.Unmarshal(env.Data, &got)
 	if !env.OK || got.Action != "direct" || got.Rule == nil || got.Rule.Name != "geo" {
 		t.Errorf("explain = %s, error %+v; want direct by rule geo", env.Data, env.Error)
+	}
+}
+
+// A rule that pulls the DNS server off the proxy makes every lookup depend
+// on that server being reachable without it.
+func TestRulesThatCaptureTheDNSServerWarn(t *testing.T) {
+	h := newHarness(t)
+	fix := "celare rules add proxy 1.1.1.1 --name dns --first"
+
+	_, env := h.runJSON("rules", "add", "direct", "1.1.1.0/24", "--name", "cf")
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "1.1.1.1") || !strings.Contains(env.Warnings[0], fix) {
+		t.Errorf("rules add direct 1.1.1.0/24: warnings %q, want one naming 1.1.1.1 and %q", env.Warnings, fix)
+	}
+	h.runJSON("connect", "tokyo")
+	if _, env := h.runJSON("apply", "--dry-run"); len(env.Warnings) != 1 {
+		t.Errorf("apply --dry-run: warnings %q, want one", env.Warnings)
+	}
+	if _, env := h.runJSON("config", "check"); !strings.Contains(string(env.Data), fix) {
+		t.Errorf("config check: %s, want a warning with %q", env.Data, fix)
+	}
+
+	if _, env := h.runJSON(strings.Fields(fix)[1:]...); len(env.Warnings) != 0 {
+		t.Errorf("after the suggested rule: warnings %q, want none", env.Warnings)
+	}
+}
+
+// A DNS server on the LAN is only reachable directly.
+func TestLANDNSServerGoingDirectIsFine(t *testing.T) {
+	h := newHarness(t)
+	write(t, filepath.Join(h.dir, "config.toml"), "dns = [\"192.168.1.1\"]\n"+baseConfig)
+	if _, env := h.runJSON("rules", "add", "direct", "192.168.0.0/16"); len(env.Warnings) != 0 {
+		t.Errorf("warnings %q, want none", env.Warnings)
 	}
 }
 

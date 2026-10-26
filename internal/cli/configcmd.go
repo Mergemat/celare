@@ -100,6 +100,7 @@ func (a *app) configCheckCmd() *cobra.Command {
 			if usesGeo(cfg) && !geoFilesPresent(a.env.ConfigDir) {
 				warnings = append(warnings, "rules use geosite:/geoip: but geosite.dat/geoip.dat are missing; run `celare rules geo-update`")
 			}
+			warnings = append(warnings, a.dnsWarnings(cfg)...)
 			return a.ok(map[string]any{"path": a.configPath(), "warnings": warnings}, func(w io.Writer) {
 				fmt.Fprintln(w, "config.toml is valid")
 				for _, wr := range warnings {

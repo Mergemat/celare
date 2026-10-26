@@ -41,6 +41,8 @@ const (
 type app struct {
 	env  Env
 	json bool
+	// warnings go out with the next ok result.
+	warnings []string
 }
 
 // Run executes one command line and returns the exit code.
@@ -128,9 +130,16 @@ func (a *app) ok(data any, human func(w io.Writer), next ...string) error {
 		if next == nil {
 			next = []string{}
 		}
-		return encodeJSON(a.env.Stdout, map[string]any{"ok": true, "data": data, "next": next})
+		doc := map[string]any{"ok": true, "data": data, "next": next}
+		if len(a.warnings) > 0 {
+			doc["warnings"] = a.warnings
+		}
+		return encodeJSON(a.env.Stdout, doc)
 	}
 	human(a.env.Stdout)
+	for _, w := range a.warnings {
+		fmt.Fprintln(a.env.Stdout, "warning: "+w)
+	}
 	if len(next) > 0 {
 		fmt.Fprintln(a.env.Stdout, "\nnext:")
 		for _, n := range next {
