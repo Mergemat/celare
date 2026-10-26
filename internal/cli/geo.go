@@ -14,6 +14,12 @@ import (
 // geosite: matches.
 const geoBase = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/"
 
+// useGeoDir points Xray, which otherwise looks next to the binary, at the
+// lists geo-update keeps in configDir.
+func useGeoDir(configDir string) {
+	os.Setenv("XRAY_LOCATION_ASSET", filepath.Join(configDir, "geo"))
+}
+
 func (a *app) rulesGeoUpdateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "geo-update",

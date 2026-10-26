@@ -219,6 +219,7 @@ target, pass the domain the app sends with --domain.`,
 			if err != nil {
 				return failure("config_invalid", err.Error(), "")
 			}
+			useGeoDir(a.env.ConfigDir)
 			d, err := engine.Explain(xray, args[0], domain)
 			if err != nil {
 				return failure("explain_failed", err.Error(), "")

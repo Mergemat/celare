@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/Mergemat/celare/internal/cli"
 	"github.com/Mergemat/celare/internal/daemon"
 	"github.com/google/go-cmp/cmp"
+	"github.com/xtls/xray-core/common/geodata"
+	"google.golang.org/protobuf/proto"
 )
 
 type fakeTunnel struct{ running string }
@@ -251,6 +254,29 @@ func TestRulesExplainNamesTheMatchingRule(t *testing.T) {
 	json.Unmarshal(env.Data, &got)
 	if got.Action != "proxy" || got.Rule != nil {
 		t.Errorf("explain = %s, want proxy by the default", env.Data)
+	}
+}
+
+// geo-update keeps geoip.dat in the config dir, not next to the binary.
+func TestRulesExplainReadsGeoListsFromTheConfigDir(t *testing.T) {
+	h := newHarness(t)
+	list, _ := proto.Marshal(&geodata.GeoIPList{Entry: []*geodata.GeoIP{{
+		Code: "TEST", Cidr: []*geodata.CIDR{{Ip: net.ParseIP("198.51.100.0").To4(), Prefix: 24}},
+	}}})
+	os.MkdirAll(filepath.Join(h.dir, "geo"), 0o755)
+	os.WriteFile(filepath.Join(h.dir, "geo", "geoip.dat"), list, 0o644)
+	h.runJSON("rules", "add", "direct", "geoip:test", "--name", "geo")
+
+	_, env := h.runJSON("rules", "explain", "198.51.100.7")
+	var got struct {
+		Action string `json:"action"`
+		Rule   *struct {
+			Name string `json:"name"`
+		} `json:"rule"`
+	}
+	json.Unmarshal(env.Data, &got)
+	if !env.OK || got.Action != "direct" || got.Rule == nil || got.Rule.Name != "geo" {
+		t.Errorf("explain = %s, error %+v; want direct by rule geo", env.Data, env.Error)
 	}
 }
 

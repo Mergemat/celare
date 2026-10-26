@@ -448,8 +448,7 @@ func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
 func runDaemon(ctx context.Context, configDir string, owner int, socket string) error {
 	log.SetFlags(log.LstdFlags)
 	os.MkdirAll(supportDir, 0o755)
-	// geoip:/geosite: rules read their lists from here.
-	os.Setenv("XRAY_LOCATION_ASSET", filepath.Join(configDir, "geo"))
+	useGeoDir(configDir)
 
 	self, err := os.Executable()
 	if err != nil {
