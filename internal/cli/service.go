@@ -23,6 +23,7 @@ import (
 	"github.com/Mergemat/celare/internal/probe"
 	"github.com/Mergemat/celare/internal/system"
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -102,9 +103,11 @@ func (a *app) escalate(args ...string) error {
 	return exitCode(0)
 }
 
+// stdinIsTerminal asks for terminal settings, as isatty does: /dev/null
+// is a character device too.
 func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TIOCGETA)
+	return err == nil
 }
 
 func shellQuote(s string) string {
