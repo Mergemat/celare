@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -286,18 +287,21 @@ func TestRulesExplainReadsGeoListsFromTheConfigDir(t *testing.T) {
 func TestRulesThatCaptureTheDNSServerWarn(t *testing.T) {
 	h := newHarness(t)
 	fix := "celare rules add proxy 1.1.1.1 --name dns --first"
+	warnsWithFix := func(what string, env envelope) {
+		t.Helper()
+		named := slices.ContainsFunc(env.Warnings, func(w string) bool { return strings.Contains(w, "1.1.1.1") })
+		if !named || len(env.Next) == 0 || env.Next[0] != fix {
+			t.Errorf("%s: warnings %q, next %q; want a warning naming 1.1.1.1 and next led by %q", what, env.Warnings, env.Next, fix)
+		}
+	}
 
 	_, env := h.runJSON("rules", "add", "direct", "1.1.1.0/24", "--name", "cf")
-	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "1.1.1.1") || !strings.Contains(env.Warnings[0], fix) {
-		t.Errorf("rules add direct 1.1.1.0/24: warnings %q, want one naming 1.1.1.1 and %q", env.Warnings, fix)
-	}
+	warnsWithFix("rules add", env)
 	h.runJSON("connect", "tokyo")
-	if _, env := h.runJSON("apply", "--dry-run"); len(env.Warnings) != 1 {
-		t.Errorf("apply --dry-run: warnings %q, want one", env.Warnings)
-	}
-	if _, env := h.runJSON("config", "check"); !strings.Contains(string(env.Data), fix) {
-		t.Errorf("config check: %s, want a warning with %q", env.Data, fix)
-	}
+	_, env = h.runJSON("apply", "--dry-run")
+	warnsWithFix("apply --dry-run", env)
+	_, env = h.runJSON("config", "check")
+	warnsWithFix("config check", env)
 
 	if _, env := h.runJSON(strings.Fields(fix)[1:]...); len(env.Warnings) != 0 {
 		t.Errorf("after the suggested rule: warnings %q, want none", env.Warnings)

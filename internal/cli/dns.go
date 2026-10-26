@@ -30,8 +30,8 @@ func routingConfig(cfg config.Config) ([]byte, error) {
 // dnsWarnings names the rules that send a DNS server direct, or block
 // it, when the default would carry it through the proxy. Lookups follow
 // the rules, so they then fail wherever that server is unreachable, as
-// 1.1.1.1 is on some networks.
-func (a *app) dnsWarnings(cfg config.Config) []string {
+// 1.1.1.1 is on some networks. fix is a command that undoes this, or "".
+func (a *app) dnsWarnings(cfg config.Config) (warnings []string, fix string) {
 	def := cfg.Default
 	if def == "" {
 		def = config.Proxy
@@ -42,10 +42,10 @@ func (a *app) dnsWarnings(cfg config.Config) []string {
 	}
 	xray, err := routingConfig(cfg)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	useGeoDir(a.env.ConfigDir)
-	var out []string
+	var caught []string
 	for _, s := range servers {
 		ip := dnsServerIP(s)
 		// A LAN server is only reachable directly.
@@ -64,19 +64,30 @@ func (a *app) dnsWarnings(cfg config.Config) []string {
 		if action == config.Proxy || (action == config.Direct && def == config.Direct) {
 			continue
 		}
-		r := cfg.Rules[pos-1]
 		label := fmt.Sprintf("rule %d", pos)
-		if r.Name != "" {
-			label += fmt.Sprintf(" (%s)", r.Name)
+		if name := cfg.Rules[pos-1].Name; name != "" {
+			label += fmt.Sprintf(" (%s)", name)
 		}
-		fix := fmt.Sprintf("celare rules add %s %s --name dns --first", def, ip)
 		if action == config.Block {
-			out = append(out, fmt.Sprintf("%s blocks your DNS server %s, so nothing will load; to let lookups through: %s", label, ip, fix))
+			warnings = append(warnings, fmt.Sprintf("%s blocks your DNS server %s, so nothing will load", label, ip))
 		} else {
-			out = append(out, fmt.Sprintf("%s sends your DNS server %s direct, outside the VPN; if %s is blocked there, nothing will load; to keep lookups on the VPN: %s", label, ip, ip, fix))
+			warnings = append(warnings, fmt.Sprintf("%s sends your DNS server %s direct, outside the VPN; if it's blocked there, nothing will load", label, ip))
 		}
+		caught = append(caught, ip.String())
 	}
-	return out
+	if len(caught) > 0 {
+		fix = fmt.Sprintf("celare rules add %s %s --name dns --first", def, strings.Join(caught, " "))
+	}
+	return warnings, fix
+}
+
+// warnDNS queues cfg's DNS warnings, and their fix, for the next result.
+func (a *app) warnDNS(cfg config.Config) {
+	warnings, fix := a.dnsWarnings(cfg)
+	a.warnings = append(a.warnings, warnings...)
+	if fix != "" {
+		a.fixes = append(a.fixes, fix)
+	}
 }
 
 // dnsServerIP is the address Xray dials for a DNS server, or nil when it

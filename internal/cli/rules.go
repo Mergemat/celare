@@ -146,9 +146,13 @@ func (a *app) rulesAddCmd() *cobra.Command {
 				case dryRun:
 					cfg.Rules = append(cfg.Rules, rule)
 				}
-				a.warnings = a.dnsWarnings(cfg)
+				a.warnDNS(cfg)
 			}
-			return a.ok(map[string]any{"rule": rule, "first": first, "dryRun": dryRun}, func(w io.Writer) {
+			data := map[string]any{"rule": rule, "first": first, "dryRun": dryRun}
+			if dryRun {
+				return a.ok(data, func(w io.Writer) { fmt.Fprintf(w, "would add rule %s\n", ruleSummary(rule)) })
+			}
+			return a.ok(data, func(w io.Writer) {
 				fmt.Fprintf(w, "added rule %s\n", ruleSummary(rule))
 			}, "celare apply --dry-run", "celare apply --confirm 30s")
 		},
@@ -233,7 +237,7 @@ target, pass the domain the app sends with --domain.`,
 				fmt.Fprintf(w, "%s → %s, by %s\n", args[0], ex.Action, by)
 				switch {
 				case d.RoutedBy == "domain" && len(d.IPs) > 0:
-					fmt.Fprintf(w, "  routed by the domain %s, which resolves to %s\n", d.Domain, strings.Join(d.IPs, ", "))
+					fmt.Fprintf(w, "  routed by the domain %s, which resolves to %s\n", d.Domain, someOf(d.IPs, 4))
 				case d.RoutedBy == "domain":
 					fmt.Fprintf(w, "  routed by the domain %s, which doesn't resolve\n", d.Domain)
 				case d.RoutedBy == "ip" && d.Domain != "":
@@ -249,3 +253,11 @@ target, pass the domain the app sends with --domain.`,
 }
 
 func printJSON(w io.Writer, v any) { encodeJSON(w, v) }
+
+// someOf lists up to n of items, and how many more there are.
+func someOf(items []string, n int) string {
+	if len(items) <= n {
+		return strings.Join(items, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(items[:n], ", "), len(items)-n)
+}

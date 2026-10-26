@@ -41,8 +41,9 @@ const (
 type app struct {
 	env  Env
 	json bool
-	// warnings go out with the next ok result.
-	warnings []string
+	// warnings go out with the next ok result, and the commands that fix
+	// them lead its next.
+	warnings, fixes []string
 }
 
 // Run executes one command line and returns the exit code.
@@ -126,10 +127,8 @@ func (u usageError) Error() string { return u.err.Error() }
 // ok prints a successful result. human writes the text form; next lists
 // the commands that usually follow.
 func (a *app) ok(data any, human func(w io.Writer), next ...string) error {
+	next = append(append([]string{}, a.fixes...), next...)
 	if a.json {
-		if next == nil {
-			next = []string{}
-		}
 		doc := map[string]any{"ok": true, "data": data, "next": next}
 		if len(a.warnings) > 0 {
 			doc["warnings"] = a.warnings

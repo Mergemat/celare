@@ -74,7 +74,7 @@ func (f *changeFlags) register(cmd *cobra.Command, probe bool) {
 func (a *app) change(cmd *cobra.Command, action daemon.Action, nodeName string, f changeFlags) error {
 	if action != daemon.Disconnect {
 		if cfg, err := a.loadConfig(); err == nil {
-			a.warnings = a.dnsWarnings(cfg)
+			a.warnDNS(cfg)
 		}
 	}
 	c, err := a.client().CreateChange(cmd.Context(), api.ChangeRequest{

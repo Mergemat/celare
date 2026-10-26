@@ -5,7 +5,7 @@ description: Drive the celare VPN on this Mac. Use when the task touches the VPN
 
 # celare
 
-celare is the Mac's VPN. Drive it only through the `celare` command; it never prompts. Add `--json` to every command: stdout is then one document, `{"ok": true, "data": ..., "next": [...]}` or `{"ok": false, "error": {"code", "message", "hint"}}`. `next` lists the usual follow-up commands; `hint` is the fix for an error. A successful result can also carry `warnings`: tell the user, each one says how to fix it.
+celare is the Mac's VPN. Drive it only through the `celare` command; it never prompts. Add `--json` to every command: stdout is then one document, `{"ok": true, "data": ..., "next": [...]}` or `{"ok": false, "error": {"code", "message", "hint"}}`. `next` lists the usual follow-up commands; `hint` is the fix for an error. A successful result can also carry `warnings`: tell the user about each; when a command fixes one, it leads `next`.
 
 ## Two kinds of state
 

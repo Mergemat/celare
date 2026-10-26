@@ -91,7 +91,7 @@ func (a *app) configCheckCmd() *cobra.Command {
 			if problems := cfg.Check(); len(problems) > 0 {
 				return &apiError{Code: "config_invalid", Message: "config.toml has problems", Problems: problems, Hint: "fix them and run `celare config check` again"}
 			}
-			warnings := []string{}
+			var warnings []string
 			for _, s := range cfg.Subscriptions {
 				if _, ok := a.library().SubscriptionInfo(s.Name); !ok {
 					warnings = append(warnings, fmt.Sprintf("subscription %q was never fetched; run `celare subs update %s`", s.Name, s.Name))
@@ -100,12 +100,10 @@ func (a *app) configCheckCmd() *cobra.Command {
 			if usesGeo(cfg) && !geoFilesPresent(a.env.ConfigDir) {
 				warnings = append(warnings, "rules use geosite:/geoip: but geosite.dat/geoip.dat are missing; run `celare rules geo-update`")
 			}
-			warnings = append(warnings, a.dnsWarnings(cfg)...)
-			return a.ok(map[string]any{"path": a.configPath(), "warnings": warnings}, func(w io.Writer) {
+			a.warnings = warnings
+			a.warnDNS(cfg)
+			return a.ok(map[string]any{"path": a.configPath()}, func(w io.Writer) {
 				fmt.Fprintln(w, "config.toml is valid")
-				for _, wr := range warnings {
-					fmt.Fprintln(w, "warning: "+wr)
-				}
 			}, "celare apply --dry-run")
 		},
 	}
