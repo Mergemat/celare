@@ -218,6 +218,21 @@ func TestRulesAddClassifiesMatches(t *testing.T) {
 	}
 }
 
+func TestRulesAddTakesIPv6CIDRsAndSlashedRegexps(t *testing.T) {
+	h := newHarness(t)
+	code, env := h.runJSON("rules", "add", "direct", "2606:4700:a0::/48", "regexp:^cdn/x$", "--dry-run")
+	var got struct {
+		Rule struct {
+			Domains []string `json:"domains"`
+			IPs     []string `json:"ips"`
+		} `json:"rule"`
+	}
+	json.Unmarshal(env.Data, &got)
+	if code != 0 || !cmp.Equal(got.Rule.IPs, []string{"2606:4700:a0::/48"}) || !cmp.Equal(got.Rule.Domains, []string{"regexp:^cdn/x$"}) {
+		t.Errorf("exit %d, data %s, error %+v", code, env.Data, env.Error)
+	}
+}
+
 func TestRulesExplainNamesTheMatchingRule(t *testing.T) {
 	h := newHarness(t)
 	_, env := h.runJSON("rules", "explain", "10.1.2.3")

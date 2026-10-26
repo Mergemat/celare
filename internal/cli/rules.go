@@ -87,15 +87,15 @@ func classify(matches []string) (domains, ips []string, err error) {
 		switch {
 		case strings.HasPrefix(m, "geoip:"):
 			ips = append(ips, m)
+		case hasDomainPrefix(m):
+			domains = append(domains, m)
 		case net.ParseIP(m) != nil:
 			ips = append(ips, m)
-		case strings.Contains(m, "/") && !strings.Contains(m, ":/"):
+		case strings.Contains(m, "/"):
 			if _, _, err := net.ParseCIDR(m); err != nil {
 				return nil, nil, fmt.Errorf("%q looks like a CIDR but isn't one", m)
 			}
 			ips = append(ips, m)
-		case hasDomainPrefix(m):
-			domains = append(domains, m)
 		case strings.Contains(m, ":"):
 			return nil, nil, fmt.Errorf("%q has an unknown prefix; use domain:, full:, keyword:, regexp:, geosite: or geoip:", m)
 		default:
