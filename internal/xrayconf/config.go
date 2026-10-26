@@ -3,6 +3,7 @@ package xrayconf
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 
 	"github.com/Mergemat/celare/internal/config"
@@ -73,6 +74,11 @@ type sniffing struct {
 	// the IP the app dialed: an app that looked it up through another VPN
 	// (V2Box) holds a fake 198.18.x address only that VPN understands.
 	RouteOnly bool `json:"routeOnly"`
+	// IPsExcluded keeps the dialed address for the IPs and CIDRs rules
+	// name: those are real addresses, and an IP rule can only match the
+	// address, never a sniffed domain (h2.cftunnel.com on Cloudflare's
+	// tunnel edge resolves to nothing).
+	IPsExcluded []string `json:"ipsExcluded,omitempty"`
 }
 
 type routing struct {
@@ -90,7 +96,17 @@ type routingRule struct {
 	OutboundTag string   `json:"outboundTag"`
 }
 
-var defaultSniffing = sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}}
+func sniffingFor(rules []config.Rule) sniffing {
+	s := sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}}
+	for _, r := range rules {
+		for _, m := range r.IPs {
+			if _, _, err := net.ParseCIDR(m); err == nil || net.ParseIP(m) != nil {
+				s.IPsExcluded = append(s.IPsExcluded, m)
+			}
+		}
+	}
+	return s
+}
 
 // Config renders a complete Xray JSON config for the plan.
 func Config(p Plan) ([]byte, error) {
@@ -126,6 +142,7 @@ func Config(p Plan) ([]byte, error) {
 		},
 		Routing: routing{DomainStrategy: "IPIfNonMatch"},
 	}
+	sniff := sniffingFor(p.Rules)
 	if len(p.DNS) > 0 {
 		cfg.DNS = &dnsConfig{Servers: p.DNS, Tag: "dns-internal"}
 	}
@@ -134,7 +151,7 @@ func Config(p Plan) ([]byte, error) {
 			Tag:      tagTUN,
 			Protocol: "tun",
 			Settings: map[string]any{"name": p.TUN.Name, "mtu": p.TUN.MTU},
-			Sniffing: defaultSniffing,
+			Sniffing: sniff,
 		})
 		cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{
 			RuleTag: "dns-hijack", InboundTag: []string{tagTUN}, Port: "53", OutboundTag: tagDNS,
@@ -147,7 +164,7 @@ func Config(p Plan) ([]byte, error) {
 			Listen:   "127.0.0.1",
 			Port:     p.SOCKSPort,
 			Settings: map[string]any{"udp": true},
-			Sniffing: defaultSniffing,
+			Sniffing: sniff,
 		})
 	}
 	for i, r := range p.Rules {

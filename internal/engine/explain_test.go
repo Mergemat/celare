@@ -15,7 +15,7 @@ func TestExplainUsesXraysOwnRouter(t *testing.T) {
 		Default: config.Proxy,
 		Rules: []config.Rule{
 			{Action: config.Block, Domains: []string{"domain:ads.example.test"}},
-			{Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
+			{Action: config.Direct, IPs: []string{"10.0.0.0/8", "2001:db8::/32"}},
 		},
 		TUN: &xrayconf.TUN{Name: "utun99", MTU: 1500},
 	})
@@ -23,21 +23,49 @@ func TestExplainUsesXraysOwnRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		target, outbound, rule string
+		target, domain, outbound, rule, routedBy string
 	}{
-		{"tracker.ads.example.test", "block", "rule-1"},
-		{"10.1.2.3", "direct", "rule-2"},
-		{"10.1.2.3:8443", "direct", "rule-2"},
-		{"203.0.113.77", "proxy", "default"},
-		{"site.example.test", "proxy", "default"},
+		{"tracker.ads.example.test", "", "block", "rule-1", "domain"},
+		{"10.1.2.3", "", "direct", "rule-2", "ip"},
+		{"10.1.2.3:8443", "", "direct", "rule-2", "ip"},
+		{"[2001:db8::1]:7844", "", "direct", "rule-2", "ip"},
+		{"203.0.113.77", "", "proxy", "default", "ip"},
+		{"site.example.test", "", "proxy", "default", "domain"},
+		// The address a rule names is what the app dialed; a sniffed
+		// domain must not take its place, even one nothing resolves.
+		{"10.1.2.3:7844", "h2.unresolvable.example.test", "direct", "rule-2", "ip"},
+		// Anywhere else, Xray routes by the sniffed domain.
+		{"203.0.113.77", "tracker.ads.example.test", "block", "rule-1", "domain"},
 	}
 	for _, tc := range cases {
-		got, err := engine.Explain(cfg, tc.target)
+		got, err := engine.Explain(cfg, tc.target, tc.domain)
 		if err != nil {
-			t.Fatalf("Explain(%q): %v", tc.target, err)
+			t.Fatalf("Explain(%q, %q): %v", tc.target, tc.domain, err)
 		}
-		if got.Outbound != tc.outbound || got.RuleTag != tc.rule {
-			t.Errorf("Explain(%q) = %s via %s, want %s via %s", tc.target, got.Outbound, got.RuleTag, tc.outbound, tc.rule)
+		if got.Outbound != tc.outbound || got.RuleTag != tc.rule || got.RoutedBy != tc.routedBy {
+			t.Errorf("Explain(%q, %q) = %s via %s by %s, want %s via %s by %s", tc.target, tc.domain,
+				got.Outbound, got.RuleTag, got.RoutedBy, tc.outbound, tc.rule, tc.routedBy)
+		}
+	}
+}
+
+func TestExplainSaysWhenASniffedDomainWouldDecide(t *testing.T) {
+	cfg, err := xrayconf.Config(xrayconf.Plan{
+		Node:    node.Node{Protocol: "trojan", Address: "203.0.113.1", Port: 443, Password: "pw"},
+		Default: config.Proxy,
+		Rules:   []config.Rule{{Action: config.Direct, IPs: []string{"10.0.0.0/8"}}},
+		TUN:     &xrayconf.TUN{Name: "utun99", MTU: 1500},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for target, want := range map[string]bool{"10.1.2.3": false, "203.0.113.77": true} {
+		got, err := engine.Explain(cfg, target, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.SniffOverride != want {
+			t.Errorf("Explain(%q).SniffOverride = %v, want %v", target, got.SniffOverride, want)
 		}
 	}
 }

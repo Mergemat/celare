@@ -181,12 +181,20 @@ type explanation struct {
 }
 
 func (a *app) rulesExplainCmd() *cobra.Command {
-	return &cobra.Command{
+	var domain string
+	cmd := &cobra.Command{
 		Use:   "explain <host|ip>[:port]",
 		Short: "Show which rule decides where traffic to a target goes",
 		Long: `Ask Xray's own router, built from config.toml as it is now, where a
-connection would go. Works offline and without the tunnel. Domains are also
-resolved so IP rules are checked as they are for real traffic.`,
+connection through the tunnel would go. Works offline and without the
+tunnel.
+
+Xray reads the domain a connection carries (TLS SNI, HTTP Host, QUIC) and
+routes by it instead of the dialed address, unless an IP rule names that
+address. A domain target is resolved and checked that way. For an IP
+target, pass the domain the app sends with --domain.`,
+		Example: `  celare rules explain openai.com
+  celare rules explain 198.41.200.53:7844 --domain h2.cftunnel.com`,
 		Args: exactArgs(1, "one target"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := a.loadConfig()
@@ -210,7 +218,7 @@ resolved so IP rules are checked as they are for real traffic.`,
 			if err != nil {
 				return failure("config_invalid", err.Error(), "")
 			}
-			d, err := engine.Explain(xray, args[0])
+			d, err := engine.Explain(xray, args[0], domain)
 			if err != nil {
 				return failure("explain_failed", err.Error(), "")
 			}
@@ -226,12 +234,22 @@ resolved so IP rules are checked as they are for real traffic.`,
 					by = fmt.Sprintf("rule %d (%s)", ex.Rule.Position, ruleSummary(ex.Rule.Rule))
 				}
 				fmt.Fprintf(w, "%s → %s, by %s\n", args[0], ex.Action, by)
-				if len(d.IPs) > 0 && d.Domain != "" {
+				if domain == "" && len(d.IPs) > 0 && d.Domain != "" {
 					fmt.Fprintf(w, "  resolved to %s\n", strings.Join(d.IPs, ", "))
+				}
+				switch {
+				case d.RoutedBy == "domain" && len(d.IPs) > 0:
+					fmt.Fprintf(w, "  routed by the domain %s, not the address\n", d.Domain)
+				case d.RoutedBy == "ip" && d.Domain != "":
+					fmt.Fprintf(w, "  routed by the address: a rule names it, so %s doesn't replace it\n", d.Domain)
+				case d.SniffOverride:
+					fmt.Fprintln(w, "  a connection that carries a domain (TLS, HTTP, QUIC) is routed by that domain instead; check it with --domain")
 				}
 			})
 		},
 	}
+	cmd.Flags().StringVar(&domain, "domain", "", "the domain the connection carries (TLS SNI, HTTP Host), for an IP target")
+	return cmd
 }
 
 func printJSON(w io.Writer, v any) { encodeJSON(w, v) }

@@ -27,7 +27,7 @@ Your own connection probably runs through this tunnel. A bad change can cut you 
 
 - Pick a node: `celare nodes test --json` (fastest first), then connect as above.
 - Route a site through the proxy: `celare rules add proxy domain:example.com --name example --first`, then `celare apply --dry-run`, then `celare apply --confirm 60s`.
-- Why does X go direct, or get blocked: `celare rules explain X`. It names the matching rule and works with the tunnel down.
+- Why does X go direct, or get blocked: `celare rules explain X`. It names the matching rule and works with the tunnel down. For an IP, add `--domain <name>` with the domain the app sends (TLS SNI): unless a rule names the IP, Xray routes by that domain.
 - Add a server: `celare nodes add '<share-link>'`, with the link in single quotes.
 - Something is wrong: `celare doctor --json`. Each failed check carries its fix.
 

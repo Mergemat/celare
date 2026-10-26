@@ -22,7 +22,8 @@ var plainVLESS = node.Node{
 // A rule's domain and IP conditions become separate Xray rules, because
 // Xray ANDs conditions within one rule and celare ORs them. Every
 // outbound that leaves the machine is bound to the physical interface so
-// it never loops back into the tunnel.
+// it never loops back into the tunnel. Addresses that rules name are kept
+// over sniffed domains, or the IP rules could never match.
 func TestConfigRoutingAndInterfaceBinding(t *testing.T) {
 	got := renderConfig(t, xrayconf.Plan{
 		Node:    plainVLESS,
@@ -44,7 +45,7 @@ func TestConfigRoutingAndInterfaceBinding(t *testing.T) {
 			"listen": "127.0.0.1",
 			"port": 10808,
 			"settings": {"udp": true},
-			"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false}
+			"sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": false, "ipsExcluded": ["192.168.0.0/16", "::1/128"]}
 		}],
 		"outbounds": [
 			{
