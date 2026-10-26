@@ -16,6 +16,7 @@ func TestExplainUsesXraysOwnRouter(t *testing.T) {
 		Rules: []config.Rule{
 			{Action: config.Block, Domains: []string{"domain:ads.example.test"}},
 			{Action: config.Direct, IPs: []string{"10.0.0.0/8", "2001:db8::/32"}},
+			{Action: config.Direct, IPs: []string{"127.0.0.0/8", "::1/128"}},
 		},
 		TUN: &xrayconf.TUN{Name: "utun99", MTU: 1500},
 	})
@@ -36,6 +37,9 @@ func TestExplainUsesXraysOwnRouter(t *testing.T) {
 		{"10.1.2.3:7844", "h2.unresolvable.example.test", "direct", "rule-2", "ip"},
 		// Anywhere else, Xray routes by the sniffed domain.
 		{"203.0.113.77", "tracker.ads.example.test", "block", "rule-1", "domain"},
+		// No rule names the domain, so Xray resolves it and tries the IP
+		// rules on its addresses.
+		{"203.0.113.77", "localhost", "direct", "rule-3", "domain"},
 	}
 	for _, tc := range cases {
 		got, err := engine.Explain(cfg, tc.target, tc.domain)

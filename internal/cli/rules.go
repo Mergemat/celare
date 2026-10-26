@@ -191,7 +191,8 @@ tunnel.
 
 Xray reads the domain a connection carries (TLS SNI, HTTP Host, QUIC) and
 routes by it instead of the dialed address, unless an IP rule names that
-address. A domain target is resolved and checked that way. For an IP
+address. When no rule names the domain, its addresses are checked against
+the IP rules. A domain target is resolved and checked that way. For an IP
 target, pass the domain the app sends with --domain.`,
 		Example: `  celare rules explain openai.com
   celare rules explain 198.41.200.53:7844 --domain h2.cftunnel.com`,
@@ -234,12 +235,11 @@ target, pass the domain the app sends with --domain.`,
 					by = fmt.Sprintf("rule %d (%s)", ex.Rule.Position, ruleSummary(ex.Rule.Rule))
 				}
 				fmt.Fprintf(w, "%s → %s, by %s\n", args[0], ex.Action, by)
-				if domain == "" && len(d.IPs) > 0 && d.Domain != "" {
-					fmt.Fprintf(w, "  resolved to %s\n", strings.Join(d.IPs, ", "))
-				}
 				switch {
 				case d.RoutedBy == "domain" && len(d.IPs) > 0:
-					fmt.Fprintf(w, "  routed by the domain %s, not the address\n", d.Domain)
+					fmt.Fprintf(w, "  routed by the domain %s, which resolves to %s\n", d.Domain, strings.Join(d.IPs, ", "))
+				case d.RoutedBy == "domain":
+					fmt.Fprintf(w, "  routed by the domain %s, which doesn't resolve\n", d.Domain)
 				case d.RoutedBy == "ip" && d.Domain != "":
 					fmt.Fprintf(w, "  routed by the address: a rule names it, so %s doesn't replace it\n", d.Domain)
 				case d.SniffOverride:

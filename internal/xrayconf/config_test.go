@@ -63,8 +63,7 @@ func TestConfigRoutingAndInterfaceBinding(t *testing.T) {
 			"rules": [
 				{"ruleTag": "rule-1", "domain": ["full:localhost"], "outboundTag": "direct"},
 				{"ruleTag": "rule-1", "ip": ["192.168.0.0/16"], "outboundTag": "direct"},
-				{"ruleTag": "rule-2", "ip": ["::1/128"], "outboundTag": "block"},
-				{"ruleTag": "default", "network": "tcp,udp", "outboundTag": "proxy"}
+				{"ruleTag": "rule-2", "ip": ["::1/128"], "outboundTag": "block"}
 			]
 		}
 	}`
@@ -84,7 +83,8 @@ func TestConfigTUNHijacksDNS(t *testing.T) {
 	var cfg struct {
 		Inbounds []any `json:"inbounds"`
 		Routing  struct {
-			Rules []any `json:"rules"`
+			DomainStrategy string `json:"domainStrategy"`
+			Rules          []any  `json:"rules"`
 		} `json:"routing"`
 	}
 	mustUnmarshal(t, got, &cfg)
@@ -98,11 +98,14 @@ func TestConfigTUNHijacksDNS(t *testing.T) {
 		t.Errorf("inbounds mismatch (-want +got):\n%s", diff)
 	}
 	wantRules := `[
-		{"ruleTag": "dns-hijack", "inboundTag": ["tun-in"], "port": "53", "outboundTag": "dns-out"},
-		{"ruleTag": "default", "network": "tcp,udp", "outboundTag": "direct"}
+		{"ruleTag": "dns-hijack", "inboundTag": ["tun-in"], "port": "53", "outboundTag": "dns-out"}
 	]`
 	if diff := cmp.Diff(decode(t, []byte(wantRules)), any(cfg.Routing.Rules)); diff != "" {
 		t.Errorf("rules mismatch (-want +got):\n%s", diff)
+	}
+	// No IP rule could use a lookup's answer, so none is made.
+	if cfg.Routing.DomainStrategy != "AsIs" {
+		t.Errorf("domainStrategy = %q without IP rules, want AsIs", cfg.Routing.DomainStrategy)
 	}
 }
 

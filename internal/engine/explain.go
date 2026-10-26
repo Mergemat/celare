@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	stdnet "net"
 	"slices"
 	"strconv"
 	"time"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
@@ -49,38 +51,24 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 	d := Decision{Target: target, Port: port, Domain: sniffed}
 
 	ip := stdnet.ParseIP(host)
-	if ip == nil {
+	ipTarget := ip != nil
+	var resolved []stdnet.IP
+	if !ipTarget {
 		if sniffed != "" {
 			return Decision{}, fmt.Errorf("a sniffed domain only applies to an IP target, not %q", host)
 		}
 		d.Domain = host
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		ips, _ := stdnet.DefaultResolver.LookupIP(ctx, "ip", host)
-		cancel()
-		for _, ip := range ips {
-			d.IPs = append(d.IPs, ip.String())
+		resolved = lookup(host)
+		if len(resolved) > 0 {
+			ip = resolved[0]
 		}
-		if len(ips) > 0 {
-			ip = ips[0]
-		}
-	} else {
-		d.IPs = []string{ip.String()}
 	}
 
-	enabled, excluded, err := tunSniffing(configJSON)
+	facts, err := readFacts(configJSON)
 	if err != nil {
 		return Decision{}, err
 	}
-	d.SniffOverride = ip != nil && enabled && !slices.ContainsFunc(excluded, func(n *stdnet.IPNet) bool { return n.Contains(ip) })
-
-	ob := &session.Outbound{}
-	if d.Domain != "" && (ip == nil || d.SniffOverride) {
-		d.RoutedBy = "domain"
-		ob.Target = net.TCPDestination(net.DomainAddress(d.Domain), net.Port(port))
-	} else {
-		d.RoutedBy = "ip"
-		ob.Target = net.TCPDestination(net.IPAddress(ip), net.Port(port))
-	}
+	d.SniffOverride = ip != nil && facts.sniffing && !slices.ContainsFunc(facts.excluded, func(n *stdnet.IPNet) bool { return n.Contains(ip) })
 
 	router, closeFn, err := routerOf(configJSON)
 	if err != nil {
@@ -88,21 +76,75 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 	}
 	defer closeFn()
 
-	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: "tun-in"})
-	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{ob})
-	// No lookups: celare's routing ends in a catch-all rule, so Xray's
-	// IPIfNonMatch never resolves a domain to try IP rules.
-	ctx = session.ContextWithContent(ctx, &session.Content{SkipDNSResolve: true})
-	route, err := router.PickRoute(routingsession.AsRoutingContext(ctx))
+	var route routing.Route
+	if d.Domain != "" && (ip == nil || d.SniffOverride) {
+		d.RoutedBy = "domain"
+		route, err = pickRoute(router, net.DomainAddress(d.Domain), port, nil)
+		if err != nil {
+			// IPIfNonMatch: no rule matched the domain, so Xray resolves it
+			// and tries the IP rules on its addresses.
+			if ipTarget {
+				resolved = lookup(d.Domain)
+			}
+			route, err = pickRoute(router, net.DomainAddress(d.Domain), port, resolved)
+		}
+		for _, ip := range resolved {
+			d.IPs = append(d.IPs, ip.String())
+		}
+	} else {
+		d.RoutedBy = "ip"
+		route, err = pickRoute(router, net.IPAddress(ip), port, nil)
+		d.IPs = []string{ip.String()}
+	}
+	if errors.Is(err, common.ErrNoClue) {
+		// Xray sends what no rule matches to the first outbound.
+		d.Outbound, d.RuleTag = facts.firstOutbound, "default"
+		return d, nil
+	}
 	if err != nil {
-		return Decision{}, fmt.Errorf("no route matched %s: %w", target, err)
+		return Decision{}, fmt.Errorf("routing %s: %w", target, err)
 	}
 	d.Outbound, d.RuleTag = route.GetOutboundTag(), route.GetRuleTag()
 	return d, nil
 }
 
-// tunSniffing reads the TUN inbound's sniffing settings from configJSON.
-func tunSniffing(configJSON []byte) (enabled bool, excluded []*stdnet.IPNet, err error) {
+// withIPs is a routing context whose target resolved to ips.
+type withIPs struct {
+	routing.Context
+	ips []net.IP
+}
+
+func (c withIPs) GetTargetIPs() []net.IP { return c.ips }
+
+func pickRoute(router routing.Router, addr net.Address, port int, ips []stdnet.IP) (routing.Route, error) {
+	ob := &session.Outbound{Target: net.TCPDestination(addr, net.Port(port))}
+	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: "tun-in"})
+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{ob})
+	// Explain does the lookups itself, so they need no running Xray.
+	ctx = session.ContextWithContent(ctx, &session.Content{SkipDNSResolve: true})
+	var rctx routing.Context = routingsession.AsRoutingContext(ctx)
+	if ips != nil {
+		rctx = withIPs{rctx, ips}
+	}
+	return router.PickRoute(rctx)
+}
+
+func lookup(host string) []stdnet.IP {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ips, _ := stdnet.DefaultResolver.LookupIP(ctx, "ip", host)
+	return ips
+}
+
+type facts struct {
+	sniffing      bool
+	excluded      []*stdnet.IPNet
+	firstOutbound string
+}
+
+// readFacts reads what routing depends on beyond Xray's router: the TUN
+// inbound's sniffing settings and the first outbound.
+func readFacts(configJSON []byte) (facts, error) {
 	var cfg struct {
 		Inbounds []struct {
 			Tag      string `json:"tag"`
@@ -111,24 +153,31 @@ func tunSniffing(configJSON []byte) (enabled bool, excluded []*stdnet.IPNet, err
 				IPsExcluded []string `json:"ipsExcluded"`
 			} `json:"sniffing"`
 		} `json:"inbounds"`
+		Outbounds []struct {
+			Tag string `json:"tag"`
+		} `json:"outbounds"`
 	}
 	if err := json.Unmarshal(configJSON, &cfg); err != nil {
-		return false, nil, err
+		return facts{}, err
+	}
+	var f facts
+	if len(cfg.Outbounds) > 0 {
+		f.firstOutbound = cfg.Outbounds[0].Tag
 	}
 	for _, in := range cfg.Inbounds {
 		if in.Tag != "tun-in" {
 			continue
 		}
+		f.sniffing = in.Sniffing.Enabled
 		for _, m := range in.Sniffing.IPsExcluded {
 			if _, n, err := stdnet.ParseCIDR(m); err == nil {
-				excluded = append(excluded, n)
+				f.excluded = append(f.excluded, n)
 			} else if ip := stdnet.ParseIP(m); ip != nil {
-				excluded = append(excluded, &stdnet.IPNet{IP: ip, Mask: stdnet.CIDRMask(len(ip)*8, len(ip)*8)})
+				f.excluded = append(f.excluded, &stdnet.IPNet{IP: ip, Mask: stdnet.CIDRMask(len(ip)*8, len(ip)*8)})
 			}
 		}
-		return in.Sniffing.Enabled, excluded, nil
 	}
-	return false, nil, nil
+	return f, nil
 }
 
 // routerOf builds an Xray instance without inbounds, so nothing listens

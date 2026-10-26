@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 
 	"github.com/Mergemat/celare/internal/config"
@@ -140,7 +141,13 @@ func Config(p Plan) ([]byte, error) {
 			{Tag: tagBlock, Protocol: "blackhole"},
 			{Tag: tagDNS, Protocol: "dns"},
 		},
-		Routing: routing{DomainStrategy: "IPIfNonMatch"},
+		Routing: routing{DomainStrategy: "AsIs"},
+	}
+	// IPIfNonMatch resolves a domain no rule matched, to try the IP rules
+	// on its addresses. Without IP rules the lookup only costs time, and
+	// node tests would depend on the local resolver.
+	if slices.ContainsFunc(p.Rules, func(r config.Rule) bool { return len(r.IPs) > 0 }) {
+		cfg.Routing.DomainStrategy = "IPIfNonMatch"
 	}
 	sniff := sniffingFor(p.Rules)
 	if len(p.DNS) > 0 {
@@ -184,7 +191,11 @@ func Config(p Plan) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("default route: %w", err)
 	}
-	cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{RuleTag: "default", Network: "tcp,udp", OutboundTag: def})
+	// Xray sends what no rule matches to the first outbound. A catch-all
+	// rule instead would stop IPIfNonMatch from ever resolving a domain to
+	// try the IP rules, so geoip: rules would never see domain traffic.
+	i := slices.IndexFunc(cfg.Outbounds, func(o OutboundObject) bool { return o.Tag == def })
+	cfg.Outbounds[0], cfg.Outbounds[i] = cfg.Outbounds[i], cfg.Outbounds[0]
 	return json.MarshalIndent(cfg, "", "  ")
 }
 

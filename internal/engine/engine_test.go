@@ -24,21 +24,10 @@ import (
 // servers refuse private destinations by default, so the server allows
 // them: every target here is on loopback.
 func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
-	direct := answer(t, "direct")
-	proxied := answer(t, "proxied")
-	serverPort := freePort(t)
-	startEngine(t, fmt.Sprintf(`{
-		"inbounds": [{"listen": "127.0.0.1", "port": %d, "protocol": "vless",
-			"settings": {"clients": [{"id": "22222222-3333-4444-9555-666666666666"}], "decryption": "none"}}],
-		"outbounds": [{"protocol": "freedom", "settings": {"redirect": "%s", "finalRules": [{"action": "allow"}]}}]
-	}`, serverPort, proxied))
-
+	directPort, server := pathServers(t)
 	socks := freePort(t)
 	cfg, err := xrayconf.Config(xrayconf.Plan{
-		Node: node.Node{
-			Protocol: "vless", Address: "127.0.0.1", Port: serverPort,
-			UUID: "22222222-3333-4444-9555-666666666666", Encryption: "none",
-		},
+		Node:    server,
 		Default: config.Proxy,
 		Rules: []config.Rule{
 			{Action: config.Direct, Domains: []string{"full:localhost"}},
@@ -51,7 +40,6 @@ func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
 	}
 	startEngine(t, string(cfg))
 
-	_, directPort, _ := net.SplitHostPort(direct)
 	client := socksClient(t, socks)
 	if got := get(t, client, "http://localhost:"+directPort); got != "direct" {
 		t.Errorf("localhost (direct rule) answered %q, want direct", got)
@@ -61,6 +49,66 @@ func TestRoutingSendsTrafficDownTheRightPath(t *testing.T) {
 	}
 	if got := get(t, client, "http://[::1]:"+directPort); got != "" {
 		t.Errorf("[::1] (block rule) answered %q, want no answer", got)
+	}
+}
+
+// A domain no domain rule names goes by the IP rule its address falls
+// under, as geoip:ru should for a Russian site geosite:ru doesn't list.
+func TestIPRulesMatchWhatADomainResolvesTo(t *testing.T) {
+	directPort, server := pathServers(t)
+	socks := freePort(t)
+	cfg, err := xrayconf.Config(xrayconf.Plan{
+		Node:      server,
+		Default:   config.Proxy,
+		Rules:     []config.Rule{{Action: config.Direct, IPs: []string{"127.0.0.0/8", "::1/128"}}},
+		SOCKSPort: socks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startEngine(t, string(cfg))
+
+	if got := get(t, socksClient(t, socks), "http://localhost:"+directPort); got != "direct" {
+		t.Errorf("localhost (resolves into the direct rule) answered %q, want direct", got)
+	}
+}
+
+func TestDefaultDirectSendsUnmatchedTrafficDirect(t *testing.T) {
+	directPort, server := pathServers(t)
+	socks := freePort(t)
+	cfg, err := xrayconf.Config(xrayconf.Plan{
+		Node:      server,
+		Default:   config.Direct,
+		Rules:     []config.Rule{{Action: config.Proxy, Domains: []string{"full:proxied.example.test"}}},
+		SOCKSPort: socks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startEngine(t, string(cfg))
+
+	if got := get(t, socksClient(t, socks), "http://127.0.0.1:"+directPort); got != "direct" {
+		t.Errorf("127.0.0.1 (no rule, default direct) answered %q, want direct", got)
+	}
+}
+
+// pathServers starts the targets and the proxy server described above
+// TestRoutingSendsTrafficDownTheRightPath. It returns the port of the
+// direct target and the node to reach the server.
+func pathServers(t *testing.T) (directPort string, server node.Node) {
+	t.Helper()
+	direct := answer(t, "direct")
+	proxied := answer(t, "proxied")
+	serverPort := freePort(t)
+	startEngine(t, fmt.Sprintf(`{
+		"inbounds": [{"listen": "127.0.0.1", "port": %d, "protocol": "vless",
+			"settings": {"clients": [{"id": "22222222-3333-4444-9555-666666666666"}], "decryption": "none"}}],
+		"outbounds": [{"protocol": "freedom", "settings": {"redirect": "%s", "finalRules": [{"action": "allow"}]}}]
+	}`, serverPort, proxied))
+	_, directPort, _ = net.SplitHostPort(direct)
+	return directPort, node.Node{
+		Protocol: "vless", Address: "127.0.0.1", Port: serverPort,
+		UUID: "22222222-3333-4444-9555-666666666666", Encryption: "none",
 	}
 }
 
