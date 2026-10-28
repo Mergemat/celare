@@ -14,7 +14,8 @@ import (
 )
 
 type testResult struct {
-	Node string `json:"node"`
+	Node      string `json:"node"`
+	Interface string `json:"interface,omitempty"`
 	probe.Result
 }
 
@@ -26,7 +27,7 @@ func (a *app) nodesTestCmd() *cobra.Command {
 		Short: "Measure each node by fetching a URL through it (all nodes by default)",
 		Long: `Start a private Xray instance per node and time one request through it,
 leaving by the same path celare's tunnel uses: the system's current route
-out, which is another VPN's tunnel while one is connected. Needs no daemon
+out for the server's IP family. Needs no daemon
 and doesn't touch the running tunnel.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			es, err := a.entries()
@@ -45,11 +46,6 @@ and doesn't touch the running tunnel.`,
 			if t, err := a.client().Tunnel(cmd.Context()); err == nil && t.System != nil {
 				ours = t.System.Tun
 			}
-			up, err := (&system.Tunnel{}).Upstream(ours)
-			if err != nil {
-				return failure("no_network", err.Error(), "connect Wi-Fi or Ethernet")
-			}
-			iface := up.Interface
 			results := make([]testResult, len(es))
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, 6)
@@ -59,7 +55,12 @@ and doesn't touch the running tunnel.`,
 					defer wg.Done()
 					sem <- struct{}{}
 					defer func() { <-sem }()
-					results[i] = testResult{Node: e.Name, Result: probe.Node(cmd.Context(), e.Node, target, timeout, iface)}
+					n, up, err := (&system.Tunnel{}).ResolveUpstream(e.Node, ours)
+					if err != nil {
+						results[i] = testResult{Node: e.Name, Result: probe.Result{Error: err.Error()}}
+						return
+					}
+					results[i] = testResult{Node: e.Name, Interface: up.Interface, Result: probe.Node(cmd.Context(), n, target, timeout, up.Interface)}
 				}()
 			}
 			wg.Wait()
@@ -73,17 +74,16 @@ and doesn't touch the running tunnel.`,
 			if len(results) > 0 && results[0].OK {
 				next = []string{"celare connect " + quoteArg(results[0].Node) + " --confirm 30s"}
 			}
-			data := map[string]any{"interface": iface, "results": results}
+			data := map[string]any{"results": results}
 			return a.ok(data, func(w io.Writer) {
-				fmt.Fprintf(w, "via %s:\n", iface)
 				tw := table(w)
-				fmt.Fprintln(tw, "NODE\tRESULT")
+				fmt.Fprintln(tw, "NODE\tINTERFACE\tRESULT")
 				for _, r := range results {
 					res := fmt.Sprintf("%d ms", r.LatencyMs)
 					if !r.OK {
 						res = "failed: " + r.Error
 					}
-					fmt.Fprintf(tw, "%s\t%s\n", r.Node, res)
+					fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Node, r.Interface, res)
 				}
 				tw.Flush()
 			}, next...)

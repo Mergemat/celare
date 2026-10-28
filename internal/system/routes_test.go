@@ -11,7 +11,7 @@ import (
 
 // The kernel read must see exactly what netstat shows on this machine.
 func TestDefaultRoutesMatchNetstat(t *testing.T) {
-	out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
+	out, err := exec.Command("netstat", "-rn").Output()
 	if err != nil {
 		t.Skip("no netstat:", err)
 	}

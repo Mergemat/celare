@@ -97,16 +97,16 @@ default            192.168.1.1        UGScIg                en0
 
 func TestUpstreamFollowsTheSystemsPrimaryRoute(t *testing.T) {
 	routes := netconf.ParseDefaultRoutes(netstatV2BoxPrimary)
-	got, ok := netconf.Upstream(routes, "utun9")
+	got, ok := netconf.Upstream(routes, "utun9", false)
 	if !ok || got.Interface != "utun4" {
 		t.Errorf("Upstream = %+v, %v; want utun4 (V2Box)", got, ok)
 	}
-	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(netstatWithOtherVPN), "")
+	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(netstatWithOtherVPN), "", false)
 	if !ok || got.Interface != "utun4" {
 		t.Errorf("Upstream = %+v, %v; want utun4", got, ok)
 	}
 	plain := "Internet:\ndefault            192.168.1.1        UGScg                 en0\n"
-	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(plain), "")
+	got, ok = netconf.Upstream(netconf.ParseDefaultRoutes(plain), "", false)
 	if !ok || got.Interface != "en0" {
 		t.Errorf("Upstream = %+v, %v; want en0 when no other VPN is up", got, ok)
 	}
@@ -116,7 +116,7 @@ func TestUpstreamFollowsTheSystemsPrimaryRoute(t *testing.T) {
 // as a default route.
 func TestUpstreamSkipsCelaresOwnTunnel(t *testing.T) {
 	routes := netconf.ParseDefaultRoutes("Internet:\ndefault  link#40  UCSg  utun9\ndefault  192.168.1.1  UGScIg  en0\n")
-	got, ok := netconf.Upstream(routes, "utun9")
+	got, ok := netconf.Upstream(routes, "utun9", false)
 	if !ok || got.Interface != "en0" {
 		t.Errorf("Upstream = %+v, %v; want en0", got, ok)
 	}

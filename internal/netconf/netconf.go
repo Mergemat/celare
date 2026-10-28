@@ -19,10 +19,11 @@ const TunnelDNS = "169.254.10.1"
 // LegacyTunnelDNS is what celare 0.1 set; doctor still recognises it.
 const LegacyTunnelDNS = "198.18.0.53"
 
-// Route is one IPv4 default route.
+// Route is one default route.
 type Route struct {
 	Gateway   string
 	Interface string
+	IPv6      bool
 	// Scoped routes (flag I) only serve sockets bound to their
 	// interface; the unscoped one is the system's primary.
 	Scoped bool
@@ -35,15 +36,21 @@ type Service struct {
 	Disabled bool
 }
 
-// ParseDefaultRoutes reads the default routes from `netstat -rn -f inet`.
+// ParseDefaultRoutes reads the default routes from `netstat -rn`.
 func ParseDefaultRoutes(netstat string) []Route {
 	var out []Route
+	ipv6 := false
 	for _, line := range strings.Split(netstat, "\n") {
+		if strings.TrimSpace(line) == "Internet6:" {
+			ipv6 = true
+		} else if strings.TrimSpace(line) == "Internet:" {
+			ipv6 = false
+		}
 		f := strings.Fields(line)
 		if len(f) < 4 || f[0] != "default" {
 			continue
 		}
-		out = append(out, Route{Gateway: f[1], Interface: f[3], Scoped: strings.Contains(f[2], "I")})
+		out = append(out, Route{Gateway: f[1], Interface: f[3], IPv6: ipv6, Scoped: strings.Contains(f[2], "I")})
 	}
 	return out
 }
@@ -73,9 +80,12 @@ func PhysicalDefault(routes []Route) (Route, bool) {
 // Upstream is the route celare's own traffic to its server takes: the
 // system's current primary default route, whichever interface that is
 // (Wi-Fi, Ethernet, or another VPN's tunnel), never celare's own tunnel.
-func Upstream(routes []Route, ours string) (Route, bool) {
+func Upstream(routes []Route, ours string, ipv6 bool) (Route, bool) {
 	var scoped []Route
 	for _, r := range routes {
+		if r.IPv6 != ipv6 {
+			continue
+		}
 		if r.Interface == ours && ours != "" {
 			continue
 		}
@@ -93,9 +103,9 @@ func Upstream(routes []Route, ours string) (Route, bool) {
 
 // HasScopedDefault reports whether iface already has its own scoped
 // default route; macOS adds one for every network service but the primary.
-func HasScopedDefault(routes []Route, iface string) bool {
+func HasScopedDefault(routes []Route, iface string, ipv6 bool) bool {
 	for _, r := range routes {
-		if r.Scoped && r.Interface == iface {
+		if r.Scoped && r.Interface == iface && r.IPv6 == ipv6 {
 			return true
 		}
 	}

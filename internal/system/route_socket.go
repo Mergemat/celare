@@ -59,11 +59,19 @@ func routeMessage(add bool, spec RouteSpec, index int) (*route.RouteMessage, err
 	}
 	if spec.Gateway != "" {
 		gw, err := netip.ParseAddr(spec.Gateway)
-		if err != nil || !gw.Is4() || !ip.Is4() {
-			return nil, fmt.Errorf("invalid IPv4 gateway %q", spec.Gateway)
+		if err != nil || gw.Is4() != ip.Is4() {
+			return nil, fmt.Errorf("invalid gateway %q for %s", spec.Gateway, spec.Prefix)
 		}
 		m.Flags |= unix.RTF_GATEWAY
-		m.Addrs[unix.RTAX_GATEWAY] = &route.Inet4Addr{IP: gw.As4()}
+		if gw.Is4() {
+			m.Addrs[unix.RTAX_GATEWAY] = &route.Inet4Addr{IP: gw.As4()}
+		} else {
+			zone := 0
+			if gw.IsLinkLocalUnicast() || gw.Zone() != "" {
+				zone = index
+			}
+			m.Addrs[unix.RTAX_GATEWAY] = &route.Inet6Addr{IP: gw.As16(), ZoneID: zone}
+		}
 	} else {
 		m.Addrs[unix.RTAX_GATEWAY] = &route.LinkAddr{Index: index, Name: spec.Interface}
 	}

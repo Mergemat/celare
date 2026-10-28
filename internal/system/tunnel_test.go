@@ -111,6 +111,63 @@ var tokyo = daemon.Spec{
 	Default: config.Proxy,
 }
 
+func TestIPv6ServerUsesIPv6UpstreamWithAnotherVPNConnected(t *testing.T) {
+	r := &fakeRunner{netstat: `Internet:
+default 240.0.0.10 UGScg utun4
+default 192.168.1.1 UGScI en0
+Internet6:
+default fe80::1%en0 UGcIg en0
+`}
+	e := &fakeEngine{}
+	tun, _ := newTunnel(t, r, e)
+	spec := tokyo
+	spec.Node.Address = "2001:db8::1"
+	tun.CanReach = func(host string, port int, iface string) error {
+		if iface != "en0" {
+			return fmt.Errorf("IPv6 server has no route over %s", iface)
+		}
+		return nil
+	}
+	if err := tun.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	if tun.Interface() != "en0" {
+		t.Fatalf("bound to %s, want en0", tun.Interface())
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	for _, effect := range r.ran {
+		if strings.Contains(effect, "via utun4") || strings.Contains(effect, "::/0") {
+			t.Fatalf("changed another VPN or the existing IPv6 default: %v", r.ran)
+		}
+	}
+}
+
+func TestIPv6DefaultPreservedBeforeCapturingIPv6Traffic(t *testing.T) {
+	r := &fakeRunner{netstat: `Internet:
+default 192.168.1.1 UGScI en0
+Internet6:
+default fe80::1%en0 UGc en0
+`}
+	e := &fakeEngine{}
+	tun, _ := newTunnel(t, r, e)
+	spec := tokyo
+	spec.Node.Address = "2001:db8::1"
+	if err := tun.Start(spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ran) == 0 || r.ran[0] != "add ::/0 via en0 scoped=true" {
+		t.Fatalf("IPv6 upstream must be preserved before capture: %v", r.ran)
+	}
+	if err := tun.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.has("delete ::/0 via en0 scoped=true") {
+		t.Fatalf("owned IPv6 route leaked: %v", r.ran)
+	}
+}
+
 func TestStartRoutesIntoAFreshUtunAndBindsToWiFi(t *testing.T) {
 	r := &fakeRunner{netstat: netstatOut}
 	e := &fakeEngine{}

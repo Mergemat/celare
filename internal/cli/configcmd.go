@@ -160,12 +160,16 @@ func (a *app) configRenderCmd() *cobra.Command {
 			if err != nil {
 				return failure("node_not_found", err.Error(), "")
 			}
+			ours := ""
+			if t, err := a.client().Tunnel(cmd.Context()); err == nil && t.System != nil {
+				ours = t.System.Tun
+			}
+			n, up, err := (&system.Tunnel{}).ResolveUpstream(n, ours)
+			if err != nil {
+				return failure("no_network", err.Error(), "connect Wi-Fi or Ethernet")
+			}
 			if !reveal {
 				n = n.Redacted()
-			}
-			iface := "en0"
-			if route, _, err := (&system.Tunnel{}).Physical(); err == nil {
-				iface = route.Interface
 			}
 			def := cfg.Default
 			if def == "" {
@@ -177,7 +181,7 @@ func (a *app) configRenderCmd() *cobra.Command {
 			}
 			out, err := xrayconf.Config(xrayconf.Plan{
 				Node: n, Default: def, Rules: cfg.Rules, DNS: dns,
-				TUN: &xrayconf.TUN{Name: "utunN", MTU: 1500}, BindInterface: iface,
+				TUN: &xrayconf.TUN{Name: "utunN", MTU: 1500}, BindInterface: up.Interface,
 			})
 			if err != nil {
 				return failure("render_failed", err.Error(), "")

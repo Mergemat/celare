@@ -9,12 +9,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// DefaultRoutes reads the IPv4 default routes from the kernel, in the
-// order `netstat -rn -f inet` lists them, without starting a process:
+// DefaultRoutes reads both families' default routes from the kernel,
+// in the order netstat lists them, without starting a process:
 // as root under launchd, each command the daemon runs costs it up to
 // seconds.
 func DefaultRoutes() ([]netconf.Route, error) {
-	rib, err := route.FetchRIB(unix.AF_INET, route.RIBTypeRoute, 0)
+	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -28,21 +28,43 @@ func DefaultRoutes() ([]netconf.Route, error) {
 		if !ok || rm.Flags&unix.RTF_UP == 0 || len(rm.Addrs) <= unix.RTAX_NETMASK {
 			continue
 		}
-		dst, ok := rm.Addrs[unix.RTAX_DST].(*route.Inet4Addr)
-		if !ok || dst.IP != [4]byte{} {
-			continue
-		}
-		if mask, ok := rm.Addrs[unix.RTAX_NETMASK].(*route.Inet4Addr); ok && mask.IP != [4]byte{} {
+		ipv6 := false
+		switch dst := rm.Addrs[unix.RTAX_DST].(type) {
+		case *route.Inet4Addr:
+			if dst.IP != [4]byte{} {
+				continue
+			}
+			if mask, ok := rm.Addrs[unix.RTAX_NETMASK].(*route.Inet4Addr); ok && mask.IP != [4]byte{} {
+				continue
+			}
+		case *route.Inet6Addr:
+			if dst.IP != [16]byte{} {
+				continue
+			}
+			if mask, ok := rm.Addrs[unix.RTAX_NETMASK].(*route.Inet6Addr); ok && mask.IP != [16]byte{} {
+				continue
+			}
+			ipv6 = true
+		default:
 			continue
 		}
 		ifi, err := net.InterfaceByIndex(rm.Index)
 		if err != nil {
 			continue
 		}
-		r := netconf.Route{Interface: ifi.Name, Scoped: rm.Flags&unix.RTF_IFSCOPE != 0}
+		r := netconf.Route{Interface: ifi.Name, IPv6: ipv6, Scoped: rm.Flags&unix.RTF_IFSCOPE != 0}
 		switch gw := rm.Addrs[unix.RTAX_GATEWAY].(type) {
 		case *route.Inet4Addr:
 			r.Gateway = net.IP(gw.IP[:]).String()
+		case *route.Inet6Addr:
+			r.Gateway = net.IP(gw.IP[:]).String()
+			if gw.ZoneID != 0 {
+				zone := strconv.Itoa(gw.ZoneID)
+				if dev, err := net.InterfaceByIndex(gw.ZoneID); err == nil {
+					zone = dev.Name
+				}
+				r.Gateway += "%" + zone
+			}
 		case *route.LinkAddr:
 			r.Gateway = gw.Name
 			if r.Gateway == "" {

@@ -7,7 +7,29 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/route"
+	"golang.org/x/sys/unix"
 )
+
+func TestIPv6ScopedGateway(t *testing.T) {
+	m, err := routeMessage(true, RouteSpec{Prefix: netip.MustParsePrefix("::/0"), Interface: "en0", Gateway: "fe80::1%en0", Scoped: true}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := route.ParseRIB(route.RIBTypeRoute, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := msgs[0].(*route.RouteMessage).Addrs[unix.RTAX_GATEWAY].(*route.Inet6Addr)
+	if gw.ZoneID != 7 || gw.IP != netip.MustParseAddr("fe80::1").As16() {
+		t.Fatalf("gateway = %+v, want fe80::1 on interface 7", gw)
+	}
+}
 
 // Exercise the kernel's routing socket parser on an unused documentation
 // network, and compare to the independently implemented route utility.

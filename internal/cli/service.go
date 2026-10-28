@@ -433,11 +433,11 @@ func (systemProbe) Probe(ctx context.Context, url string) error {
 // tunnel used, to tell a bad node from a tunnel fault.
 func diagnose(t *system.Tunnel) func(context.Context, *daemon.Spec) string {
 	return func(ctx context.Context, spec *daemon.Spec) string {
-		up, err := t.Upstream("")
+		n, up, err := t.ResolveUpstream(spec.Node, "")
 		if err != nil {
 			return err.Error()
 		}
-		r := probe.Node(ctx, spec.Node, probe.DefaultURL, 6*time.Second, up.Interface)
+		r := probe.Node(ctx, n, probe.DefaultURL, 6*time.Second, up.Interface)
 		if r.OK {
 			return fmt.Sprintf("%s works on its own over %s (%d ms), so traffic broke inside celare's tunnel; /Library/Logs/celare/xray.log has the details", spec.NodeName, up.Interface, r.LatencyMs)
 		}
@@ -539,7 +539,7 @@ func watchTunnel(ctx context.Context, d *daemon.Daemon, t *system.Tunnel, engine
 		if bound == "" {
 			continue
 		}
-		up, err := t.Upstream(t.TunName())
+		up, err := t.Upstream(t.TunName(), t.ServerAddress())
 		if err != nil || up.Interface == bound {
 			continue
 		}

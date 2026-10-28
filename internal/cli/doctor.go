@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mergemat/celare/internal/netconf"
+	"github.com/Mergemat/celare/internal/node"
 	"github.com/Mergemat/celare/internal/system"
 	"github.com/spf13/cobra"
 )
@@ -87,13 +88,28 @@ func (a *app) doctorCmd() *cobra.Command {
 			if tunnelErr == nil && tunnel.System != nil {
 				ours = tunnel.System.Tun
 			}
-			up, err := t.Upstream(ours)
+			n := node.Node{Address: "1.1.1.1", Port: 443}
+			selected := ""
+			if tunnelErr == nil {
+				selected = tunnel.Node
+				if selected == "" {
+					selected = tunnel.LastNode
+				}
+			}
+			if selected != "" {
+				if resolved, err := a.library().Resolve(cfg, selected); err == nil {
+					n = resolved
+				}
+			}
+			n, up, err := t.ResolveUpstream(n, ours)
 			if err != nil {
 				add("network", "fail", err.Error(), "connect Wi-Fi or Ethernet")
 			} else {
 				add("network", "ok", fmt.Sprintf("celare's traffic leaves by %s", up.Interface), "")
-				if err := system.DialBound("1.1.1.1", 443, up.Interface); err != nil {
-					add("upstream", "fail", fmt.Sprintf("traffic can't leave by %s: %v", up.Interface, err), "check your network or the VPN that owns "+up.Interface)
+				if system.UsesTCP(n) {
+					if err := system.DialBound(n.Address, n.Port, up.Interface); err != nil {
+						add("upstream", "fail", fmt.Sprintf("server %s:%d can't be reached over %s: %v", n.Address, n.Port, up.Interface, err), "check your network or the VPN that owns "+up.Interface)
+					}
 				}
 			}
 			if _, service, err := t.Physical(); err == nil && tunnelErr == nil && tunnel.State == "down" {
@@ -104,7 +120,7 @@ func (a *app) doctorCmd() *cobra.Command {
 			}
 			if out, err := system.Exec("scutil", "--nc", "list"); err == nil {
 				for _, n := range netconf.ConnectedVPNs(out) {
-					add("other VPNs", "ok", n+" is connected; celare's traffic goes through it", "")
+					add("other VPNs", "ok", n+" is connected", "")
 				}
 			}
 			// Mullvad's service runs even when its app is quit; it only gets in

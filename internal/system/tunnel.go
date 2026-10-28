@@ -66,6 +66,7 @@ type Tunnel struct {
 type session struct {
 	Tun         string     `json:"tun"`
 	Interface   string     `json:"interface"`
+	Address     string     `json:"address"`
 	ScopedRoute *RouteSpec `json:"scopedRoute,omitempty"`
 	engine      Engine
 }
@@ -108,22 +109,45 @@ func (t *Tunnel) physical(routes []netconf.Route) (route netconf.Route, service 
 	return route, service, nil
 }
 
-// Upstream is the route celare's own traffic leaves by: the system's
-// primary default route other than celare's tunnel ours ("" when down).
-func (t *Tunnel) Upstream(ours string) (netconf.Route, error) {
+// Upstream excludes celare's own tunnel and matches the server's address
+// family, since another VPN may carry IPv4 without carrying IPv6.
+func (t *Tunnel) Upstream(ours, address string) (netconf.Route, error) {
 	routes, err := t.routes()
 	if err != nil {
 		return netconf.Route{}, err
 	}
-	return upstream(routes, ours)
+	return upstream(routes, ours, address)
 }
 
-func upstream(routes []netconf.Route, ours string) (netconf.Route, error) {
-	up, ok := netconf.Upstream(routes, ours)
+// ResolveUpstream pins the server before choosing the route for its IP family.
+func (t *Tunnel) ResolveUpstream(n node.Node, ours string) (node.Node, netconf.Route, error) {
+	n, err := t.pinAddress(n)
+	if err != nil {
+		return n, netconf.Route{}, err
+	}
+	up, err := t.Upstream(ours, n.Address)
+	return n, up, err
+}
+
+func upstream(routes []netconf.Route, ours, address string) (netconf.Route, error) {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return netconf.Route{}, fmt.Errorf("server address %q is not resolved", address)
+	}
+	up, ok := netconf.Upstream(routes, ours, ip.To4() == nil)
 	if !ok {
 		return netconf.Route{}, errors.New("no network: there is no default route; connect Wi-Fi or Ethernet first")
 	}
 	return up, nil
+}
+
+func (t *Tunnel) ServerAddress() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.session == nil {
+		return ""
+	}
+	return t.session.Address
 }
 
 // Interface is the upstream interface the running tunnel is bound to.
@@ -188,12 +212,12 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	if err != nil {
 		return err
 	}
-	up, err := upstream(routes, "")
+	clock.lap("network")
+	n, err := t.pinAddress(s.Node)
 	if err != nil {
 		return err
 	}
-	clock.lap("network")
-	n, err := t.pinAddress(s.Node)
+	up, err := upstream(routes, "", n.Address)
 	if err != nil {
 		return err
 	}
@@ -209,10 +233,15 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 	sess := &session{
 		Tun:       netconf.FreeTunName(ifaces),
 		Interface: up.Interface,
+		Address:   n.Address,
 	}
-	if !netconf.HasScopedDefault(routes, up.Interface) {
-		sess.ScopedRoute = &RouteSpec{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Interface: up.Interface, Scoped: true}
-		if net.ParseIP(up.Gateway) != nil {
+	if !netconf.HasScopedDefault(routes, up.Interface, up.IPv6) {
+		prefix := "0.0.0.0/0"
+		if up.IPv6 {
+			prefix = "::/0"
+		}
+		sess.ScopedRoute = &RouteSpec{Prefix: netip.MustParsePrefix(prefix), Interface: up.Interface, Scoped: true}
+		if _, err := netip.ParseAddr(up.Gateway); err == nil {
 			sess.ScopedRoute.Gateway = up.Gateway
 		}
 	}
@@ -277,7 +306,7 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 // reach checks the server the way Xray dials it, where that can be
 // checked (TCP).
 func (t *Tunnel) reach(n node.Node, iface string) error {
-	if !usesTCP(n) || t.CanReach == nil {
+	if !UsesTCP(n) || t.CanReach == nil {
 		return nil
 	}
 	return t.CanReach(n.Address, n.Port, iface)
@@ -414,7 +443,11 @@ func (t *Tunnel) pinAddress(n node.Node) (node.Node, error) {
 	if net.ParseIP(host) != nil {
 		return n, nil
 	}
-	ips, err := t.Lookup(host)
+	lookup := t.Lookup
+	if lookup == nil {
+		lookup = net.LookupIP
+	}
+	ips, err := lookup(host)
 	if err != nil || len(ips) == 0 {
 		return n, fmt.Errorf("resolve server %s: %v", host, err)
 	}
@@ -449,9 +482,9 @@ func logLevel(file string) string {
 	return "info"
 }
 
-// usesTCP reports whether Xray reaches the server over TCP, which is what
+// UsesTCP reports whether Xray reaches the server over TCP, which is what
 // CanReach can check. Hysteria2, WireGuard and mKCP run over UDP.
-func usesTCP(n node.Node) bool {
+func UsesTCP(n node.Node) bool {
 	switch {
 	case n.Protocol == "hysteria2", n.Protocol == "wireguard", n.Transport.Type == "kcp":
 		return false
