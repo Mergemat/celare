@@ -464,3 +464,48 @@ func TestTunnelReportsAnEngineThatExitsOnItsOwn(t *testing.T) {
 		t.Error("EngineExited = true while down")
 	}
 }
+
+// Xray's direct outbound is bound to the uplink like the proxy, so the
+// uplink needs a scoped default in every family it has a gateway for, not
+// only the server's; recovering from a crash removes them all.
+func TestDirectTrafficKeepsAScopedDefaultInEveryFamily(t *testing.T) {
+	for _, server := range []string{"203.0.113.9", "2001:db8::1"} {
+		t.Run(server, func(t *testing.T) {
+			r := &fakeRunner{netstat: "Internet:\ndefault 192.168.1.1 UGScg en0\nInternet6:\ndefault fe80::1%en0 UGcg en0\n"}
+			tun, restore := newTunnel(t, r, &fakeEngine{})
+			spec := tokyo
+			spec.Node.Address = server
+			if err := tun.Start(spec); err != nil {
+				t.Fatal(err)
+			}
+			if !r.has("add 0.0.0.0/0 via en0 scoped=true") || !r.has("add ::/0 via en0 scoped=true") {
+				t.Fatalf("want scoped defaults for both families: %v", r.ran)
+			}
+			r.ran = nil
+			fresh := &system.Tunnel{ChangeRoute: r.route, SetDNS: r.dns, RestorePath: restore}
+			if err := fresh.Recover(); err != nil {
+				t.Fatal(err)
+			}
+			if !r.has("delete 0.0.0.0/0 via en0 scoped=true") || !r.has("delete ::/0 via en0 scoped=true") {
+				t.Fatalf("recover left a scoped default behind: %v", r.ran)
+			}
+		})
+	}
+}
+
+// A session left by 0.2.6 recorded its one scoped default under its old name.
+func TestRecoverRemovesTheScopedDefaultOfAnOlderSession(t *testing.T) {
+	r := &fakeRunner{}
+	restore := filepath.Join(t.TempDir(), "restore.json")
+	old := `{"tun":"utun5","interface":"en0","address":"203.0.113.9","scopedRoute":{"prefix":"0.0.0.0/0","interface":"en0","gateway":"192.168.1.1","scoped":true}}`
+	if err := os.WriteFile(restore, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &system.Tunnel{ChangeRoute: r.route, SetDNS: r.dns, RestorePath: restore}
+	if err := fresh.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.has("delete 0.0.0.0/0 via en0 scoped=true") {
+		t.Fatalf("recover left the old session's scoped default: %v", r.ran)
+	}
+}

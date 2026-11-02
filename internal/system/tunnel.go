@@ -64,9 +64,13 @@ type Tunnel struct {
 
 // session is what Stop needs to undo Start; it is also the restore file.
 type session struct {
-	Tun         string     `json:"tun"`
-	Interface   string     `json:"interface"`
-	Address     string     `json:"address"`
+	Tun       string `json:"tun"`
+	Interface string `json:"interface"`
+	Address   string `json:"address"`
+	// ScopedRoutes are the uplink defaults celare added and removes.
+	ScopedRoutes []RouteSpec `json:"scopedRoutes,omitempty"`
+	// ScopedRoute is where 0.2.6 and earlier recorded their one scoped
+	// default; only read when recovering their crashed sessions.
 	ScopedRoute *RouteSpec `json:"scopedRoute,omitempty"`
 	engine      Engine
 }
@@ -231,19 +235,10 @@ func (t *Tunnel) Start(s daemon.Spec) error {
 		return fmt.Errorf("list interfaces: %w", err)
 	}
 	sess := &session{
-		Tun:       netconf.FreeTunName(ifaces),
-		Interface: up.Interface,
-		Address:   n.Address,
-	}
-	if !netconf.HasScopedDefault(routes, up.Interface, up.IPv6) {
-		prefix := "0.0.0.0/0"
-		if up.IPv6 {
-			prefix = "::/0"
-		}
-		sess.ScopedRoute = &RouteSpec{Prefix: netip.MustParsePrefix(prefix), Interface: up.Interface, Scoped: true}
-		if _, err := netip.ParseAddr(up.Gateway); err == nil {
-			sess.ScopedRoute.Gateway = up.Gateway
-		}
+		Tun:          netconf.FreeTunName(ifaces),
+		Interface:    up.Interface,
+		Address:      n.Address,
+		ScopedRoutes: MissingScopedDefaults(routes, up.Interface),
 	}
 	clock.lap("checks")
 
@@ -337,18 +332,49 @@ func (t *Tunnel) changeRoute(add bool, spec RouteSpec) error {
 	return nil
 }
 
+// MissingScopedDefaults are the defaults scoped to iface that the system
+// lacks. Once the tunnel's routes cover the unscoped defaults, a socket
+// bound to iface, as all of Xray's outbounds are, only finds a scoped one;
+// direct traffic needs it in every family iface has a gateway for,
+// whatever the server's family.
+func MissingScopedDefaults(routes []netconf.Route, iface string) []RouteSpec {
+	var out []RouteSpec
+	for _, ipv6 := range []bool{false, true} {
+		if netconf.HasScopedDefault(routes, iface, ipv6) {
+			continue
+		}
+		i := slices.IndexFunc(routes, func(r netconf.Route) bool { return r.Interface == iface && r.IPv6 == ipv6 })
+		if i < 0 {
+			continue
+		}
+		spec := RouteSpec{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Interface: iface, Scoped: true}
+		if ipv6 {
+			spec.Prefix = netip.MustParsePrefix("::/0")
+		}
+		if _, err := netip.ParseAddr(routes[i].Gateway); err == nil {
+			spec.Gateway = routes[i].Gateway
+		}
+		out = append(out, spec)
+	}
+	return out
+}
+
 func (t *Tunnel) setRoutes(add bool, s *session) error {
-	if add && s.ScopedRoute != nil {
-		if err := t.changeRoute(true, *s.ScopedRoute); err != nil {
-			return err
+	if add {
+		for _, spec := range s.ScopedRoutes {
+			if err := t.changeRoute(true, spec); err != nil {
+				return err
+			}
 		}
 	}
 	var errs []error
 	for _, spec := range tunnelRoutes(s.Tun) {
 		errs = append(errs, t.changeRoute(add, spec))
 	}
-	if !add && s.ScopedRoute != nil {
-		errs = append(errs, t.changeRoute(false, *s.ScopedRoute))
+	if !add {
+		for _, spec := range s.ScopedRoutes {
+			errs = append(errs, t.changeRoute(false, spec))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -398,6 +424,9 @@ func (t *Tunnel) Recover() error {
 	var sess session
 	if err := json.Unmarshal(b, &sess); err != nil {
 		return fmt.Errorf("restore file %s is corrupt: %w", t.RestorePath, err)
+	}
+	if sess.ScopedRoute != nil {
+		sess.ScopedRoutes = append(sess.ScopedRoutes, *sess.ScopedRoute)
 	}
 	return t.undo(&sess)
 }

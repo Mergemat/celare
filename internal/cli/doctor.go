@@ -81,6 +81,19 @@ func (a *app) doctorCmd() *cobra.Command {
 				} else {
 					add("tunnel", "ok", fmt.Sprintf("%s carries traffic: exit IP %s, %d ms", tunnel.Node, ip, latency.Milliseconds()), "")
 				}
+				if tunnel.System != nil && tunnel.System.Interface != "" {
+					if routes, err := system.DefaultRoutes(); err == nil {
+						iface := tunnel.System.Interface
+						for _, missing := range system.MissingScopedDefaults(routes, iface) {
+							family := "IPv4"
+							if missing.Prefix.Addr().Is6() {
+								family = "IPv6"
+							}
+							// Restarting the daemon brings the tunnel back up with every route.
+							add("direct routes", "fail", fmt.Sprintf("no %s default scoped to %s, so direct %s traffic can't leave", family, iface, family), "run `celare service install`")
+						}
+					}
+				}
 			}
 
 			t := &system.Tunnel{}
