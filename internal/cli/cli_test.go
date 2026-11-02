@@ -338,3 +338,26 @@ func TestConfigInitThenCheck(t *testing.T) {
 		t.Errorf("check of a fresh config: exit %d, %+v", code, env.Error)
 	}
 }
+
+// One rule can name domains and IPs together; Xray must accept it and
+// explain must name that rule whichever of the two decides.
+func TestRuleWithDomainsAndIPs(t *testing.T) {
+	h := newHarness(t)
+	if code, env := h.runJSON("rules", "add", "direct", "full:localhost", "198.51.100.0/24", "--name", "mixed", "--first"); code != 0 {
+		t.Fatalf("rules add exit %d: %+v", code, env.Error)
+	}
+	for _, target := range []string{"localhost", "198.51.100.7"} {
+		_, env := h.runJSON("rules", "explain", target)
+		var got struct {
+			Action string `json:"action"`
+			Rule   *struct {
+				Position int    `json:"position"`
+				Name     string `json:"name"`
+			} `json:"rule"`
+		}
+		json.Unmarshal(env.Data, &got)
+		if !env.OK || got.Action != "direct" || got.Rule == nil || got.Rule.Position != 1 || got.Rule.Name != "mixed" {
+			t.Errorf("explain %s = %s, error %+v; want direct by rule 1 (mixed)", target, env.Data, env.Error)
+		}
+	}
+}

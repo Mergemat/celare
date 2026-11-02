@@ -62,7 +62,7 @@ func TestConfigRoutingAndInterfaceBinding(t *testing.T) {
 			"domainStrategy": "IPIfNonMatch",
 			"rules": [
 				{"ruleTag": "rule-1", "domain": ["full:localhost"], "outboundTag": "direct"},
-				{"ruleTag": "rule-1", "ip": ["192.168.0.0/16"], "outboundTag": "direct"},
+				{"ruleTag": "rule-1-ip", "ip": ["192.168.0.0/16"], "outboundTag": "direct"},
 				{"ruleTag": "rule-2", "ip": ["::1/128"], "outboundTag": "block"}
 			]
 		}

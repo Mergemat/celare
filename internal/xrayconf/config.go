@@ -184,6 +184,10 @@ func Config(p Plan) ([]byte, error) {
 			cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{RuleTag: ruleTag, Domain: r.Domains, OutboundTag: tag})
 		}
 		if len(r.IPs) > 0 {
+			if len(r.Domains) > 0 {
+				// Xray rejects a repeated ruleTag; rules explain maps both back.
+				ruleTag += "-ip"
+			}
 			cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{RuleTag: ruleTag, IP: r.IPs, OutboundTag: tag})
 		}
 	}

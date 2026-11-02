@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/Mergemat/celare/internal/config"
@@ -106,14 +107,16 @@ func dnsServerIP(server string) net.IP {
 	return net.ParseIP(host)
 }
 
-// rulePosition turns a rule tag ("rule-3") into a position in rules.
+// rulePosition turns a rule tag ("rule-3", "rule-3-ip") into a position
+// in rules.
 func rulePosition(tag string, rules []config.Rule) (int, bool) {
 	n, ok := strings.CutPrefix(tag, "rule-")
 	if !ok {
 		return 0, false
 	}
-	var pos int
-	if _, err := fmt.Sscan(n, &pos); err != nil || pos < 1 || pos > len(rules) {
+	n, _, _ = strings.Cut(n, "-")
+	pos, err := strconv.Atoi(n)
+	if err != nil || pos < 1 || pos > len(rules) {
 		return 0, false
 	}
 	return pos, true
