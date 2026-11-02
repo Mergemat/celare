@@ -18,8 +18,10 @@ cask "celare" do
     # The app is signed ad hoc, not notarized; Homebrew already checked the
     # download against the sha256 above.
     run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Celare.app"]
-    # Install (or, on upgrade, replace) the background service. If this is
-    # skipped, the app offers the same step on first launch.
+    # Install (or, on upgrade, replace) the background service. Only sudo
+    # steps escape brew's sandbox, which blocks the macOS admin dialog, so
+    # without a terminal this fails: the app's Update button and the CLI's
+    # next command then say the service is older.
     run "{{appdir}}/Celare.app/Contents/Resources/celare",
         args:         ["service", "install"],
         sudo:         true,

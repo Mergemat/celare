@@ -62,6 +62,12 @@ type harness struct {
 // API with a fake tunnel.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWithDaemon(t, "")
+}
+
+// newHarnessWithDaemon runs a daemon that reports daemonVersion.
+func newHarnessWithDaemon(t *testing.T, daemonVersion string) *harness {
+	t.Helper()
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "config.toml"), baseConfig)
 	write(t, filepath.Join(dir, "subscriptions", "main.txt"), "hy2://auth@203.0.113.20:443?security=tls#Osaka\n")
@@ -71,7 +77,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	f.Close()
 	h := &harness{t: t, dir: dir, sock: f.Name(), tun: &fakeTunnel{}}
-	srv := &api.Server{Daemon: daemon.New(h.tun, realClock{}, okProbe{}), ConfigDir: dir, StatePath: filepath.Join(dir, "state.json")}
+	srv := &api.Server{Version: daemonVersion, Daemon: daemon.New(h.tun, realClock{}, okProbe{}), ConfigDir: dir, StatePath: filepath.Join(dir, "state.json")}
 	stop, err := srv.Listen(h.sock, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +128,21 @@ func (h *harness) runJSON(args ...string) (int, envelope) {
 func (h *harness) config() string {
 	b, _ := os.ReadFile(filepath.Join(h.dir, "config.toml"))
 	return string(b)
+}
+
+func TestOlderDaemonWarnsAndLeadsWithServiceInstall(t *testing.T) {
+	h := newHarnessWithDaemon(t, "0.0.1")
+	_, env := h.runJSON("status")
+	if len(env.Warnings) != 1 || !strings.Contains(env.Warnings[0], "0.0.1") {
+		t.Errorf("warnings = %q, want one naming the daemon's 0.0.1", env.Warnings)
+	}
+	if len(env.Next) == 0 || env.Next[0] != "celare service install" {
+		t.Errorf("next = %q, want it to lead with celare service install", env.Next)
+	}
+	_, env = h.runJSON("service", "status")
+	if len(env.Warnings) != 0 {
+		t.Errorf("service status warnings = %q, want none: it is the fix", env.Warnings)
+	}
 }
 
 func TestNodesListIncludesSubscriptionNodes(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Mergemat/celare/internal/api"
 	"github.com/Mergemat/celare/internal/engine"
@@ -90,6 +91,9 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon unreachable, 4 conflict (a change
 is pending), 5 reverted (probe failed).`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			a.warnStaleDaemon(cmd)
+		},
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", a.json, "print one JSON document on stdout")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
@@ -113,6 +117,29 @@ is pending), 5 reverted (probe failed).`,
 	root.SetHelpCommandGroupID("system")
 	root.SetCompletionCommandGroupID("system")
 	return root
+}
+
+// warnStaleDaemon flags a daemon older than this CLI. A `brew upgrade`
+// without a terminal replaces the CLI but can't replace the daemon: the
+// cask's sudo step needs a password prompt, and brew's sandbox blocks the
+// admin dialog for any other step.
+func (a *app) warnStaleDaemon(cmd *cobra.Command) {
+	top := cmd
+	for top.HasParent() && top.Parent().HasParent() {
+		top = top.Parent()
+	}
+	// service runs or replaces the daemon; doctor reports this itself.
+	if top.Name() == "service" || top.Name() == "doctor" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), time.Second)
+	defer cancel()
+	t, err := a.client().Tunnel(ctx)
+	if err != nil || t.Version == "" || t.Version == Version {
+		return
+	}
+	a.warnings = append(a.warnings, fmt.Sprintf("the background service is %s, this CLI is %s", t.Version, Version))
+	a.fixes = append(a.fixes, "celare service install")
 }
 
 func (a *app) client() *api.Client { return api.NewClient(a.env.Socket) }
