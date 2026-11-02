@@ -4,6 +4,7 @@
 package netconf
 
 import (
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -50,7 +51,13 @@ func ParseDefaultRoutes(netstat string) []Route {
 		if len(f) < 4 || f[0] != "default" {
 			continue
 		}
-		out = append(out, Route{Gateway: f[1], Interface: f[3], IPv6: ipv6, Scoped: strings.Contains(f[2], "I")})
+		gw := f[1]
+		// netstat leaves the zone off a scoped route's link-local gateway,
+		// which only means anything on the route's own interface.
+		if ip := net.ParseIP(gw); ip != nil && ip.IsLinkLocalUnicast() && !strings.Contains(gw, "%") {
+			gw += "%" + f[3]
+		}
+		out = append(out, Route{Gateway: gw, Interface: f[3], IPv6: ipv6, Scoped: strings.Contains(f[2], "I")})
 	}
 	return out
 }
