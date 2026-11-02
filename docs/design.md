@@ -42,7 +42,8 @@ celare changes                                  recent changes and how they ende
 
 celare nodes list | show <node> | add <link> [--name N] | remove <node> | test [node...]
 celare subs  list | add <name> <url> | update [name...] | remove <name>
-celare rules list | add <action> <match>... [--name N] [--first] | remove <name|position> | explain <target> | geo-update
+celare rules list | add <action> [match...] [--port P] [--network tcp|udp] [--dns S] [--name N] [--first]
+             | remove <name|position> | explain <target> [--network udp] [--domain D] | geo-update
 celare config init | check | path | render [node]
 
 celare service install [--uid U] | uninstall | status   (install/uninstall ask for your password themselves)
@@ -56,6 +57,36 @@ subscription nodes. `connect` without a node reconnects the last one.
 Rule matches are classified automatically: `domain:x`, `full:x`, `keyword:x`,
 `regexp:x`, `geosite:x` are domains; IPs, CIDRs and `geoip:x` are IPs.
 `celare rules add proxy domain:openai.com 203.0.113.0/24 --name ai`.
+
+A rule matches traffic to any of its matches. `--port` and `--network`
+narrow it: traffic must also use that port and network. A rule with only
+those applies to every destination: `celare rules add block --network udp
+--port 443` turns QUIC off, so apps fall back to TCP.
+
+`--dns <server>` resolves the rule's domains with that server instead of
+config.toml's `dns` list. It is asked the way the rule sends traffic: a
+direct rule's server is asked directly, so it answers for the user's own
+network, which is what the direct connection will use. A proxy rule's
+server is asked through the proxy. No other rule can change that, so a
+resolver never needs a rule of its own.
+
+```toml
+default = "proxy"
+dns = ["https://1.1.1.1/dns-query"]   # everything else, through the proxy
+
+[[rule]]
+name = "no-quic"
+action = "block"
+network = "udp"
+port = "443"
+
+[[rule]]
+name = "cn"
+action = "direct"
+domains = ["geosite:cn"]
+ips = ["geoip:cn"]
+dns = "223.5.5.5"
+```
 
 ### Output contract
 

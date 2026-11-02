@@ -361,3 +361,84 @@ func TestRuleWithDomainsAndIPs(t *testing.T) {
 		}
 	}
 }
+
+type explained struct {
+	Action string `json:"action"`
+	Rule   *struct {
+		Position int    `json:"position"`
+		Name     string `json:"name"`
+	} `json:"rule"`
+	DNS *struct {
+		Position int    `json:"position"`
+		DNS      string `json:"dns"`
+		Action   string `json:"action"`
+	} `json:"dns"`
+}
+
+func (h *harness) explain(args ...string) explained {
+	h.t.Helper()
+	_, env := h.runJSON(append([]string{"rules", "explain"}, args...)...)
+	if !env.OK {
+		h.t.Fatalf("explain %v: %+v", args, env.Error)
+	}
+	var got explained
+	json.Unmarshal(env.Data, &got)
+	return got
+}
+
+// --port and --network narrow a rule, so a rule needs no match at all.
+func TestRulesAddPortAndNetwork(t *testing.T) {
+	h := newHarness(t)
+	if code, env := h.runJSON("rules", "add", "block", "--network", "udp", "--port", "443", "--name", "no-quic", "--first"); code != 0 {
+		t.Fatalf("rules add exit %d: %+v", code, env.Error)
+	}
+	if !strings.Contains(h.config(), "[[rule]]\nname = \"no-quic\"\naction = \"block\"\nnetwork = \"udp\"\nport = \"443\"\n") {
+		t.Errorf("config.toml after rules add:\n%s", h.config())
+	}
+	if got := h.explain("203.0.113.9", "--network", "udp"); got.Action != "block" || got.Rule == nil || got.Rule.Name != "no-quic" {
+		t.Errorf("udp 443: %+v, want block by no-quic", got)
+	}
+	if got := h.explain("203.0.113.9"); got.Action != "proxy" || got.Rule != nil {
+		t.Errorf("tcp 443: %+v, want proxy by the default", got)
+	}
+	for _, args := range [][]string{
+		{"direct"},
+		{"direct", "--port", "70000"},
+		{"direct", "--network", "icmp"},
+		{"direct", "udp:443"},
+	} {
+		if code, _ := h.runJSON(append([]string{"rules", "add"}, args...)...); code != 2 {
+			t.Errorf("rules add %v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+// A rule's dns server resolves the rule's domains and is asked the way the
+// rule routes, so it is no cause for the DNS warning.
+func TestRuleDNSServer(t *testing.T) {
+	h := newHarness(t)
+	code, env := h.runJSON("rules", "add", "direct", "domain:example.cn", "223.5.5.0/24", "--dns", "223.5.5.5", "--name", "cn")
+	if code != 0 || len(env.Warnings) != 0 {
+		t.Fatalf("rules add exit %d, warnings %q, error %+v", code, env.Warnings, env.Error)
+	}
+	got := h.explain("www.example.cn")
+	if got.DNS == nil || got.DNS.Position != 2 || got.DNS.DNS != "223.5.5.5" || got.DNS.Action != "direct" {
+		t.Errorf("explain www.example.cn: dns %+v, want rule 2's 223.5.5.5, direct", got.DNS)
+	}
+	if got := h.explain("www.example.com"); got.DNS != nil {
+		t.Errorf("explain www.example.com: dns %+v, want the dns list", got.DNS)
+	}
+	if code, _ := h.runJSON("rules", "add", "direct", "geoip:cn", "--dns", "223.5.5.5"); code != 2 {
+		t.Errorf("--dns on a rule without domains: exit %d, want 2", code)
+	}
+}
+
+// Plain DNS goes out on UDP port 53, which a port rule can catch.
+func TestPortRuleThatCatchesTheDNSServerWarns(t *testing.T) {
+	h := newHarness(t)
+	write(t, filepath.Join(h.dir, "config.toml"), "dns = [\"8.8.8.8\"]\n"+baseConfig)
+	_, env := h.runJSON("rules", "add", "block", "--network", "udp", "--port", "53")
+	if !slices.ContainsFunc(env.Warnings, func(w string) bool { return strings.Contains(w, "blocks your DNS server 8.8.8.8") }) {
+		t.Errorf("warnings %q, want one saying the rule blocks 8.8.8.8", env.Warnings)
+	}
+}

@@ -27,7 +27,9 @@ Your own connection probably runs through this tunnel. A bad change can cut you 
 
 - Pick a node: `celare nodes test --json` (fastest first), then connect as above.
 - Route a site through the proxy: `celare rules add proxy domain:example.com --name example --first`, then `celare apply --dry-run`, then `celare apply --confirm 60s`.
-- Why does X go direct, or get blocked: `celare rules explain X`. It names the matching rule and works with the tunnel down. For an IP, add `--domain <name>` with the domain the app sends (TLS SNI): unless a rule names the IP, Xray routes by that domain.
+- Rules take any mix of domains (`domain:`, `full:`, `geosite:`, ...) and IPs (CIDRs, `geoip:`); a rule matches any of them. `--port` and `--network` narrow a rule, and a rule can have only those: `celare rules add block --network udp --port 443` (QUIC falls back to TCP), `celare rules add direct --port 22`.
+- Domestic sites direct, everything else proxied: `celare rules add direct geosite:cn geoip:cn --dns 223.5.5.5 --name cn` (use the user's country code and a resolver there). `--dns` resolves the rule's domains with that server, asked the way the rule routes, so direct sites get addresses near the user. It also suits an internal resolver for company domains. To change or drop it, `celare rules remove cn` and add the rule again.
+- Why does X go direct, or get blocked: `celare rules explain X`. It names the matching rule, and the rule whose `--dns` server looks X up, if any. It works with the tunnel down. The port is 443 unless you write `X:22`; add `--network udp` for UDP. For an IP, add `--domain <name>` with the domain the app sends (TLS SNI): unless a rule names the IP, Xray routes by that domain.
 - Add a server: `celare nodes add '<share-link>'`, with the link in single quotes.
 - Something is wrong: `celare doctor --json`. Each failed check carries its fix.
 

@@ -104,8 +104,23 @@ func (c Config) Check() []Problem {
 			add(field+".action", "%q is not one of proxy, direct, block", r.Action)
 			continue
 		}
-		if len(r.Domains) == 0 && len(r.IPs) == 0 {
-			add(field, "has no domains or ips, so it matches nothing")
+		if len(r.Domains) == 0 && len(r.IPs) == 0 && r.Port == "" && r.Network == "" {
+			add(field, "has no domains, ips, port or network, so it matches nothing")
+		}
+		switch r.Network {
+		case "", "tcp", "udp":
+		default:
+			add(field+".network", "%q is not tcp or udp", r.Network)
+		}
+		if r.Port != "" && !validPort(r.Port) {
+			add(field+".port", "%q is not a port, list or range like 22, 80,443 or 1000-2000", r.Port)
+		}
+		switch {
+		case r.DNS == "":
+		case r.Action == Block:
+			add(field+".dns", "a block rule's traffic never leaves, so it needs no DNS server")
+		case len(r.Domains) == 0:
+			add(field+".dns", "resolves the rule's domains, and the rule names none")
 		}
 	}
 	return ps

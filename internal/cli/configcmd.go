@@ -21,8 +21,9 @@ const starterConfig = `# celare configuration. Edit freely; comments are kept wh
 # Where traffic goes when no rule matches: "proxy", "direct" or "block".
 default = "proxy"
 
-# DNS servers for every lookup. Queries follow the rules like other traffic,
-# so by default they go through the proxy.
+# DNS servers for lookups. Queries follow the rules like other traffic, so
+# by default they go through the proxy. A rule can name its own server for
+# its domains (see 'celare rules --help').
 dns = ["https://1.1.1.1/dns-query"]
 
 # Nodes you add by hand ('celare nodes add <link>') are stored as share links:

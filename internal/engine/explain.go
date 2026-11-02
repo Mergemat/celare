@@ -25,6 +25,8 @@ type Decision struct {
 	Domain string   `json:"domain,omitempty"`
 	IPs    []string `json:"ips,omitempty"`
 	Port   int      `json:"port"`
+	// Network is "tcp" or "udp".
+	Network string `json:"network"`
 	// RoutedBy is what the router matched on: "ip" or "domain".
 	RoutedBy string `json:"routedBy"`
 	// SniffOverride says a domain sniffed from the connection (TLS SNI,
@@ -32,14 +34,30 @@ type Decision struct {
 	SniffOverride bool   `json:"sniffOverride"`
 	Outbound      string `json:"outbound"`
 	RuleTag       string `json:"ruleTag"`
+	// ResolverTag is the tag of the DNS server Xray asks first for a
+	// domain target, when a server that names domains matches it.
+	ResolverTag string `json:"resolverTag,omitempty"`
+}
+
+// Query is a connection to explain.
+type Query struct {
+	// Target is "host", "host:port" or "ip"; the port is 443 unless named.
+	Target string
+	// Domain is the domain the connection carries (TLS SNI), for an IP target.
+	Domain string
+	// Network is "tcp" or "udp"; "" is tcp.
+	Network string
+	// FromDNS makes it a query from Xray's own DNS client, which reaches
+	// the router from the dns tag instead of the TUN, without sniffing.
+	FromDNS bool
 }
 
 // Explain asks Xray's router, built from configJSON but not started,
-// where a TUN connection to target ("host", "host:port", "ip") would go.
-// sniffed is the domain the connection carries, for an IP target. A
-// domain target stands for an app that resolves it and sends it as SNI,
-// so it is resolved and then treated the same way.
-func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
+// where a connection would go. A domain target stands for an app that
+// resolves it and sends it as SNI, so it is resolved and then treated
+// the same way.
+func Explain(configJSON []byte, q Query) (Decision, error) {
+	target, sniffed, network := q.Target, q.Domain, q.Network
 	host, port := target, 443
 	if h, p, err := stdnet.SplitHostPort(target); err == nil {
 		n, err := strconv.Atoi(p)
@@ -48,11 +66,19 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 		}
 		host, port = h, n
 	}
-	d := Decision{Target: target, Port: port, Domain: sniffed}
+	switch network {
+	case "":
+		network = "tcp"
+	case "tcp", "udp":
+	default:
+		return Decision{}, fmt.Errorf("network %q is not tcp or udp", network)
+	}
+	d := Decision{Target: target, Port: port, Network: network, Domain: sniffed}
 
 	ip := stdnet.ParseIP(host)
 	ipTarget := ip != nil
 	var resolved []stdnet.IP
+	var err error
 	if !ipTarget {
 		if sniffed != "" {
 			return Decision{}, fmt.Errorf("a sniffed domain only applies to an IP target, not %q", host)
@@ -62,11 +88,18 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 		if len(resolved) > 0 {
 			ip = resolved[0]
 		}
+		if d.ResolverTag, err = resolverFor(configJSON, host); err != nil {
+			return Decision{}, err
+		}
 	}
 
 	facts, err := readFacts(configJSON)
 	if err != nil {
 		return Decision{}, err
+	}
+	inbound := "tun-in"
+	if q.FromDNS {
+		inbound, facts.sniffing = facts.dnsTag, false
 	}
 	d.SniffOverride = ip != nil && facts.sniffing && !slices.ContainsFunc(facts.excluded, func(n *stdnet.IPNet) bool { return n.Contains(ip) })
 
@@ -79,21 +112,21 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 	var route routing.Route
 	if d.Domain != "" && (ip == nil || d.SniffOverride) {
 		d.RoutedBy = "domain"
-		route, err = pickRoute(router, net.DomainAddress(d.Domain), port, nil)
+		route, err = pickRoute(router, inbound, dest(net.DomainAddress(d.Domain), port, network), nil)
 		if err != nil {
 			// IPIfNonMatch: no rule matched the domain, so Xray resolves it
 			// and tries the IP rules on its addresses.
 			if ipTarget {
 				resolved = lookup(d.Domain)
 			}
-			route, err = pickRoute(router, net.DomainAddress(d.Domain), port, resolved)
+			route, err = pickRoute(router, inbound, dest(net.DomainAddress(d.Domain), port, network), resolved)
 		}
 		for _, ip := range resolved {
 			d.IPs = append(d.IPs, ip.String())
 		}
 	} else {
 		d.RoutedBy = "ip"
-		route, err = pickRoute(router, net.IPAddress(ip), port, nil)
+		route, err = pickRoute(router, inbound, dest(net.IPAddress(ip), port, network), nil)
 		d.IPs = []string{ip.String()}
 	}
 	if errors.Is(err, common.ErrNoClue) {
@@ -108,6 +141,53 @@ func Explain(configJSON []byte, target, sniffed string) (Decision, error) {
 	return d, nil
 }
 
+// resolverFor is the tag of the DNS server Xray asks first for domain,
+// among the servers that name domains, or "" when none matches. Xray asks
+// the first such server in config order, and its router matches domains
+// the same way, so a router with one rule per server finds it.
+func resolverFor(configJSON []byte, domain string) (string, error) {
+	var cfg struct {
+		DNS struct {
+			Servers []json.RawMessage `json:"servers"`
+		} `json:"dns"`
+	}
+	if err := json.Unmarshal(configJSON, &cfg); err != nil {
+		return "", err
+	}
+	var rules []map[string]any
+	for _, raw := range cfg.DNS.Servers {
+		var s struct {
+			Domains []string `json:"domains"`
+			Tag     string   `json:"tag"`
+		}
+		// Plain servers are strings and name no domains.
+		if json.Unmarshal(raw, &s) != nil || len(s.Domains) == 0 || s.Tag == "" {
+			continue
+		}
+		rules = append(rules, map[string]any{"ruleTag": s.Tag, "domain": s.Domains, "outboundTag": "x"})
+	}
+	if len(rules) == 0 {
+		return "", nil
+	}
+	probe, _ := json.Marshal(map[string]any{
+		"outbounds": []map[string]string{{"tag": "x", "protocol": "freedom"}},
+		"routing":   map[string]any{"rules": rules},
+	})
+	router, closeFn, err := routerOf(probe)
+	if err != nil {
+		return "", err
+	}
+	defer closeFn()
+	route, err := pickRoute(router, "", net.TCPDestination(net.DomainAddress(domain), 443), nil)
+	if errors.Is(err, common.ErrNoClue) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return route.GetRuleTag(), nil
+}
+
 // withIPs is a routing context whose target resolved to ips.
 type withIPs struct {
 	routing.Context
@@ -116,9 +196,16 @@ type withIPs struct {
 
 func (c withIPs) GetTargetIPs() []net.IP { return c.ips }
 
-func pickRoute(router routing.Router, addr net.Address, port int, ips []stdnet.IP) (routing.Route, error) {
-	ob := &session.Outbound{Target: net.TCPDestination(addr, net.Port(port))}
-	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: "tun-in"})
+func dest(addr net.Address, port int, network string) net.Destination {
+	if network == "udp" {
+		return net.UDPDestination(addr, net.Port(port))
+	}
+	return net.TCPDestination(addr, net.Port(port))
+}
+
+func pickRoute(router routing.Router, inbound string, target net.Destination, ips []stdnet.IP) (routing.Route, error) {
+	ob := &session.Outbound{Target: target}
+	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{Tag: inbound})
 	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{ob})
 	// Explain does the lookups itself, so they need no running Xray.
 	ctx = session.ContextWithContent(ctx, &session.Content{SkipDNSResolve: true})
@@ -137,13 +224,14 @@ func lookup(host string) []stdnet.IP {
 }
 
 type facts struct {
+	dnsTag        string
 	sniffing      bool
 	excluded      []*stdnet.IPNet
 	firstOutbound string
 }
 
 // readFacts reads what routing depends on beyond Xray's router: the TUN
-// inbound's sniffing settings and the first outbound.
+// inbound's sniffing settings, the DNS client's tag and the first outbound.
 func readFacts(configJSON []byte) (facts, error) {
 	var cfg struct {
 		Inbounds []struct {
@@ -156,11 +244,14 @@ func readFacts(configJSON []byte) (facts, error) {
 		Outbounds []struct {
 			Tag string `json:"tag"`
 		} `json:"outbounds"`
+		DNS struct {
+			Tag string `json:"tag"`
+		} `json:"dns"`
 	}
 	if err := json.Unmarshal(configJSON, &cfg); err != nil {
 		return facts{}, err
 	}
-	var f facts
+	f := facts{dnsTag: cfg.DNS.Tag}
 	if len(cfg.Outbounds) > 0 {
 		f.firstOutbound = cfg.Outbounds[0].Tag
 	}

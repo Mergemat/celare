@@ -55,8 +55,19 @@ type xrayConfig struct {
 }
 
 type dnsConfig struct {
-	Servers []string `json:"servers"`
-	Tag     string   `json:"tag"`
+	// Servers holds dnsServer objects, then the plain dns list.
+	Servers []any  `json:"servers"`
+	Tag     string `json:"tag"`
+}
+
+// dnsServer resolves one rule's domains. SkipFallback keeps it from
+// answering for any other domain, which would leak those lookups to it.
+type dnsServer struct {
+	Address      string   `json:"address"`
+	Domains      []string `json:"domains"`
+	SkipFallback bool     `json:"skipFallback"`
+	// Tag is the inbound its queries are routed from.
+	Tag string `json:"tag"`
 }
 
 type inbound struct {
@@ -150,8 +161,29 @@ func Config(p Plan) ([]byte, error) {
 		cfg.Routing.DomainStrategy = "IPIfNonMatch"
 	}
 	sniff := sniffingFor(p.Rules)
-	if len(p.DNS) > 0 {
-		cfg.DNS = &dnsConfig{Servers: p.DNS, Tag: "dns-internal"}
+	var dnsRules []routingRule
+	var servers []any
+	for i, r := range p.Rules {
+		if r.DNS == "" {
+			continue
+		}
+		tag, err := outboundFor(r.Action)
+		if err != nil {
+			return nil, fmt.Errorf("rule %d: %w", i+1, err)
+		}
+		// The server is asked the way the rule sends its traffic, so it
+		// answers for the network that traffic leaves from. This rule
+		// precedes the user's, which would otherwise route its queries
+		// by the server's address.
+		dnsTag := "rule-" + strconv.Itoa(i+1) + "-dns"
+		servers = append(servers, dnsServer{Address: r.DNS, Domains: r.Domains, SkipFallback: true, Tag: dnsTag})
+		dnsRules = append(dnsRules, routingRule{RuleTag: dnsTag, InboundTag: []string{dnsTag}, OutboundTag: tag})
+	}
+	for _, s := range p.DNS {
+		servers = append(servers, s)
+	}
+	if len(servers) > 0 {
+		cfg.DNS = &dnsConfig{Servers: servers, Tag: "dns-internal"}
 	}
 	if p.TUN != nil {
 		cfg.Inbounds = append(cfg.Inbounds, inbound{
@@ -174,21 +206,37 @@ func Config(p Plan) ([]byte, error) {
 			Sniffing: sniff,
 		})
 	}
+	cfg.Routing.Rules = append(cfg.Routing.Rules, dnsRules...)
 	for i, r := range p.Rules {
 		tag, err := outboundFor(r.Action)
 		if err != nil {
 			return nil, fmt.Errorf("rule %d: %w", i+1, err)
 		}
-		ruleTag := "rule-" + strconv.Itoa(i+1)
+		// Xray ANDs the conditions of one rule, and celare ORs domains
+		// with IPs, so each becomes its own Xray rule. Port and network
+		// narrow both.
+		base := routingRule{Port: r.Port, Network: r.Network, OutboundTag: tag}
+		var parts []routingRule
 		if len(r.Domains) > 0 {
-			cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{RuleTag: ruleTag, Domain: r.Domains, OutboundTag: tag})
+			part := base
+			part.Domain = r.Domains
+			parts = append(parts, part)
 		}
 		if len(r.IPs) > 0 {
-			if len(r.Domains) > 0 {
-				// Xray rejects a repeated ruleTag; rules explain maps both back.
-				ruleTag += "-ip"
+			part := base
+			part.IP = r.IPs
+			parts = append(parts, part)
+		}
+		if len(parts) == 0 {
+			parts = append(parts, base)
+		}
+		for j, part := range parts {
+			// Xray rejects a repeated ruleTag; rules explain maps both back.
+			part.RuleTag = "rule-" + strconv.Itoa(i+1)
+			if j > 0 {
+				part.RuleTag += "-ip"
 			}
-			cfg.Routing.Rules = append(cfg.Routing.Rules, routingRule{RuleTag: ruleTag, IP: r.IPs, OutboundTag: tag})
+			cfg.Routing.Rules = append(cfg.Routing.Rules, part)
 		}
 	}
 	def, err := outboundFor(p.Default)

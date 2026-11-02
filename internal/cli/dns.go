@@ -19,19 +19,26 @@ func routingConfig(cfg config.Config) ([]byte, error) {
 	if def == "" {
 		def = config.Proxy
 	}
+	dns := cfg.DNS
+	if len(dns) == 0 {
+		dns = config.DefaultDNS
+	}
 	return xrayconf.Config(xrayconf.Plan{
 		// Routing doesn't depend on the node; any valid one will do.
 		Node:    node.Node{Protocol: "trojan", Address: "127.0.0.1", Port: 1, Password: "x"},
 		Default: def,
 		Rules:   cfg.Rules,
+		DNS:     dns,
 		TUN:     &xrayconf.TUN{Name: "utun99", MTU: 1500},
 	})
 }
 
-// dnsWarnings names the rules that send a DNS server direct, or block
-// it, when the default would carry it through the proxy. Lookups follow
-// the rules, so they then fail wherever that server is unreachable, as
-// 1.1.1.1 is on some networks. fix is a command that undoes this, or "".
+// dnsWarnings names the rules that send a server in the dns list direct,
+// or block it, when the default would carry it through the proxy. Its
+// lookups follow the rules, so they then fail wherever that server is
+// unreachable, as 1.1.1.1 is on some networks. A rule's own dns server
+// is asked the way that rule routes, which no other rule can change, so
+// it needs no warning. fix is a command that undoes this, or "".
 func (a *app) dnsWarnings(cfg config.Config) (warnings []string, fix string) {
 	def := cfg.Default
 	if def == "" {
@@ -48,12 +55,12 @@ func (a *app) dnsWarnings(cfg config.Config) (warnings []string, fix string) {
 	useGeoDir(a.env.ConfigDir)
 	var caught []string
 	for _, s := range servers {
-		ip := dnsServerIP(s)
+		ip, port, network := dnsServerAddr(s)
 		// A LAN server is only reachable directly.
 		if ip == nil || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 			continue
 		}
-		d, err := engine.Explain(xray, ip.String(), "")
+		d, err := engine.Explain(xray, engine.Query{Target: net.JoinHostPort(ip.String(), strconv.Itoa(port)), Network: network, FromDNS: true})
 		if err != nil {
 			continue
 		}
@@ -91,20 +98,34 @@ func (a *app) warnDNS(cfg config.Config) {
 	}
 }
 
-// dnsServerIP is the address Xray dials for a DNS server, or nil when it
-// names a host or bypasses routing ("+local").
-func dnsServerIP(server string) net.IP {
+// dnsServerAddr is where Xray sends a DNS server's queries, since rules
+// can match port and network too. ip is nil when the server names a host
+// or bypasses routing ("+local").
+func dnsServerAddr(server string) (ip net.IP, port int, network string) {
 	host := server
+	port, network = 53, "udp"
 	if strings.Contains(server, "://") {
 		u, err := url.Parse(server)
 		if err != nil || strings.HasSuffix(u.Scheme, "+local") {
-			return nil
+			return nil, 0, ""
 		}
-		host = u.Hostname()
-	} else if h, _, err := net.SplitHostPort(server); err == nil {
+		host, network = u.Hostname(), "tcp"
+		switch u.Scheme {
+		case "https":
+			port = 443
+		case "h2c":
+			port = 80
+		}
+		if p, err := strconv.Atoi(u.Port()); err == nil {
+			port = p
+		}
+	} else if h, p, err := net.SplitHostPort(server); err == nil {
 		host = h
+		if n, err := strconv.Atoi(p); err == nil {
+			port = n
+		}
 	}
-	return net.ParseIP(host)
+	return net.ParseIP(host), port, network
 }
 
 // rulePosition turns a rule tag ("rule-3", "rule-3-ip") into a position

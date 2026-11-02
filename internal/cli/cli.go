@@ -75,7 +75,7 @@ func (a *app) root() *cobra.Command {
 		Use:   "celare",
 		Short: "A VPN client for VLESS, VMess, Trojan, Shadowsocks, Hysteria2 and WireGuard, built for agents",
 		Long: `celare routes your Mac's traffic through VLESS, VMess, Trojan, Shadowsocks,
-Hysteria2 or WireGuard nodes, with per-domain and per-IP rules.
+Hysteria2 or WireGuard nodes, with rules by domain, IP, port and network.
 
 Policy (nodes, subscriptions, rules, DNS) lives in config.toml; edit it or use
 the nodes/subs/rules commands. The tunnel is changed with connect, disconnect

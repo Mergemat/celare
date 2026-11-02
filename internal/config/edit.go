@@ -58,6 +58,15 @@ func AddRule(path string, r Rule, first bool) error {
 		if len(r.IPs) > 0 {
 			body = append(body, "ips = "+quoteList(r.IPs))
 		}
+		if r.Network != "" {
+			body = append(body, "network = "+quote(r.Network))
+		}
+		if r.Port != "" {
+			body = append(body, "port = "+quote(r.Port))
+		}
+		if r.DNS != "" {
+			body = append(body, "dns = "+quote(r.DNS))
+		}
 		existing := tables(lines, "rule")
 		if !first || len(existing) == 0 {
 			return appendTable(lines, body[0], body[1:]...), nil

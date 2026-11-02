@@ -73,13 +73,22 @@ func TestCheckFindsEveryProblem(t *testing.T) {
 			{Name: "7", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
 			{Name: "lan", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
 			{Name: "lan", Action: config.Direct, IPs: []string{"10.0.0.0/8"}},
+			{Action: config.Block, Network: "udp", Port: "443"},
+			{Action: config.Direct, Port: "22,8000-8080"},
+			{Action: config.Block, Network: "icmp"},
+			{Action: config.Direct, Port: "70000"},
+			{Action: config.Direct, Port: "90-80"},
+			{Action: config.Direct, Domains: []string{"geosite:cn"}, DNS: "223.5.5.5"},
+			{Action: config.Block, Domains: []string{"geosite:cn"}, DNS: "223.5.5.5"},
+			{Action: config.Direct, IPs: []string{"geoip:cn"}, DNS: "223.5.5.5"},
 		},
 	}
 	var got []string
 	for _, p := range cfg.Check() {
 		got = append(got, p.Field)
 	}
-	want := []string{"default", "node[2].name", "node[2].link", "rule[1].action", "rule[2]", "rule[3].name", "rule[5].name"}
+	want := []string{"default", "node[2].name", "node[2].link", "rule[1].action", "rule[2]", "rule[3].name", "rule[5].name",
+		"rule[8].network", "rule[9].port", "rule[10].port", "rule[12].dns", "rule[13].dns"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("problem fields mismatch (-want +got):\n%s", diff)
 	}
