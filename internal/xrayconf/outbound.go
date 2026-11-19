@@ -97,7 +97,6 @@ type TLSSettings struct {
 	ServerName           string   `json:"serverName,omitempty"`
 	Fingerprint          string   `json:"fingerprint,omitempty"`
 	ALPN                 []string `json:"alpn,omitempty"`
-	AllowInsecure        bool     `json:"allowInsecure,omitempty"`
 	ECHConfigList        string   `json:"echConfigList,omitempty"`
 	PinnedPeerCertSHA256 string   `json:"pinnedPeerCertSha256,omitempty"`
 	VerifyPeerCertByName string   `json:"verifyPeerCertByName,omitempty"`
@@ -210,6 +209,12 @@ func streamSettings(n node.Node) (*StreamSettings, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Xray refuses allowInsecure: a pinned certificate or a name to
+		// verify it by takes its place. Without either, there is no way
+		// to accept the server's certificate.
+		if n.Security.AllowInsecure && pins == "" && n.Security.VerifyPeerCertByName == "" {
+			return nil, fmt.Errorf("the link skips the certificate check (insecure=1), which Xray no longer allows; ask for a link that pins the certificate with pinSHA256= or pcs=")
+		}
 		alpn := n.Security.ALPN
 		if n.Protocol == "hysteria2" && len(alpn) == 0 {
 			// Hysteria2 servers only speak HTTP/3.
@@ -219,7 +224,6 @@ func streamSettings(n node.Node) (*StreamSettings, error) {
 			ServerName:           n.Security.SNI,
 			Fingerprint:          n.Security.Fingerprint,
 			ALPN:                 alpn,
-			AllowInsecure:        n.Security.AllowInsecure,
 			ECHConfigList:        n.Security.ECHConfig,
 			PinnedPeerCertSHA256: pins,
 			VerifyPeerCertByName: n.Security.VerifyPeerCertByName,

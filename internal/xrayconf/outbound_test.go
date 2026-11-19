@@ -3,6 +3,7 @@ package xrayconf_test
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Mergemat/celare/internal/node"
@@ -299,5 +300,42 @@ func mustUnmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatalf("invalid JSON %s: %v", b, err)
+	}
+}
+
+// Hysteria2 is TLS-only, so its links usually leave security= out; the
+// outbound must still use TLS with the link's sni and pin. insecure=1
+// goes, since Xray refuses it and the pin is what replaces it.
+func TestOutboundHysteria2LinkWithoutSecurity(t *testing.T) {
+	n, err := node.ParseLink("hysteria2://auth@[2001:db8::1]:443?sni=www.example.test&insecure=1&pinSHA256=41d05968b8b440e9425182a4d24884ab862c5460f9e53ee5ca272e8449d3e305#hy2-v6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutbound(t, n, `{
+		"tag": "proxy",
+		"protocol": "hysteria",
+		"settings": {"version": 2, "address": "2001:db8::1", "port": 443},
+		"streamSettings": {
+			"network": "hysteria",
+			"security": "tls",
+			"tlsSettings": {
+				"serverName": "www.example.test",
+				"alpn": ["h3"],
+				"pinnedPeerCertSha256": "41d05968b8b440e9425182a4d24884ab862c5460f9e53ee5ca272e8449d3e305"
+			},
+			"hysteriaSettings": {"version": 2, "auth": "auth"}
+		}
+	}`)
+}
+
+// Xray refuses allowInsecure, so a link that only skips the certificate
+// check must say what to ask for instead of failing inside Xray.
+func TestOutboundInsecureWithoutPinNamesTheFix(t *testing.T) {
+	n, err := node.ParseLink("hysteria2://auth@example.test:443?sni=example.test&insecure=1#hy2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := xrayconf.Outbound(n, "proxy"); err == nil || !strings.Contains(err.Error(), "pinSHA256") {
+		t.Errorf("err = %v, want one asking for a pinned certificate", err)
 	}
 }

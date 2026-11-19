@@ -158,6 +158,8 @@ func ParseLink(uri string) (Node, error) {
 	case "hysteria2", "hy2":
 		n.Protocol = "hysteria2"
 		n.Password = u.User.Username()
+		// Hysteria2 runs only over TLS, so its links rarely say security=tls.
+		n.Security.Type = "tls"
 		n.PortHopping = q.Get("mport")
 		n.Obfs = Obfs{Type: q.Get("obfs"), Password: q.Get("obfs-password")}
 	case "wireguard":
